@@ -3,8 +3,7 @@ Premier Prospect — GitHub Actions Scraper Runner v6
 Apify fetch + text-based parsing (no HTML/soup needed).
 24 active sources. Fully tested parsers.
 """
-import os, hashlib, logging, requests, re
-from datetime import datetime, timezone
+import os, hashlib, loggingquests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('pp.scrapers')
@@ -14,10 +13,12 @@ SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 APIFY_TOKEN  = os.environ.get('APIFY_TOKEN', '')
 INGEST_URL   = f"{SUPABASE_URL}/functions/v1/pp-ingest"
 
-INGEST_HEADERS = {
+TABLE_URL = f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+TABLE_HEADERS = {
     'Authorization': f'Bearer {SUPABASE_KEY}',
     'Content-Type': 'application/json',
     'apikey': SUPABASE_KEY,
+    'Prefer': 'return=minimal',
 }
 SESSION = requests.Session()
 SESSION.headers['User-Agent'] = 'PremierProspect/6.0'
@@ -25,29 +26,26 @@ SESSION.headers['User-Agent'] = 'PremierProspect/6.0'
 MONTHS = ['January','February','March','April','May','June','July',
           'August','September','October','November','December']
 
-def dh(*parts):
-    return hashlib.sha256('|'.join(str(p or '') for p in parts).encode()).hexdigest()
-
 def post_signal(slug, owner, address, url, score, county, signal_type):
     payload = {
-        'event_type': 'scraper_signal',
         'source_slug': slug,
         'raw_owner_name': owner or '',
         'raw_address': address or '',
         'raw_url': url or '',
-        'score': score, 'county': county, 'signal_type': signal_type,
-        'dedupe_hash': dh(slug, url, owner, address),
-        'captured_at': datetime.now(timezone.utc).isoformat(),
+        'score': score,
+        'county': county,
+        'signal_type': signal_type,
+        'raw_payload': {'signal_type': signal_type, 'source_family': signal_type},
     }
     try:
-        r = requests.post(INGEST_URL, json=payload, headers=INGEST_HEADERS, timeout=15)
-        return r.status_code in (200, 201, 409)
+        r = requests.post(TABLE_URL, json=payload, headers=TABLE_HEADERS, timeout=15)
+        return r.status_code in (201, 409)
     except Exception as e:
         log.error(f'POST failed {slug}: {e}')
         return False
 
 def apify_text(url):
-    """Fetch via Apify, return plain text lines."""
+    """Fetch via Apifyturn plain text lines."""
     try:
         r = SESSION.post(
             f'https://api.apify.com/v2/acts/apify~website-content-crawler/run-sync-get-dataset-items?token={APIFY_TOKEN}&timeout=60',
