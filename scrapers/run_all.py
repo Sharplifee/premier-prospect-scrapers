@@ -338,14 +338,17 @@ def scrape_utah_county_real_property():
 def scrape_ksl_fsbo():
     slug = 'ksl-fsbo'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://classifieds.ksl.com/search/?category=real-estate-for-sale&subCategory=real-estate-homes-for-sale&owner=1')
+    lines = apify_text('https://homes.ksl.com/for-sale-by-owner/')
     count = 0
-    utah_cities = ['provo','orem','lehi','springville','payson','spanish fork','pleasant grove','american fork','mapleton','eagle mountain','saratoga springs','elk ridge','santaquin','nephi','manti','richfield','price','helper','moab']
-    for line in lines:
-        if any(c in line.lower() for c in utah_cities) or any(w in line.lower() for w in ['bedroom','bath','sq ft','sqft','acre']):
-            if post_signal(slug, None, line[:200], 'https://classifieds.ksl.com/search/?category=real-estate-for-sale&owner=1', 65, 'Utah', 'fsbo'):
+    # Pattern: address line (has digits + street), price line ($), beds line
+    for i, line in enumerate(lines):
+        # Address: contains digit + common street words + UT
+        if re.search(r'\d+.*UT', line) and ',' in line and len(line) < 100:
+            price = lines[i+1] if i+1 < len(lines) else ''
+            beds = lines[i+2] if i+2 < len(lines) else ''
+            desc = f"{line} | {price} | {beds}".strip()
+            if post_signal(slug, None, line[:150], 'https://homes.ksl.com/for-sale-by-owner/', 65, 'Utah', 'fsbo'):
                 count += 1
-            if count >= 30: break
     log.info(f'[{slug}] {count} signals posted')
     return count
 
@@ -372,7 +375,35 @@ def scrape_lir(slug, county, svc):
     return count
 
 def scrape_uco_lir_parcels():
-    return scrape_lir('uco-lir-parcels','Utah','https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Utah_LIR/FeatureServer/0')
+    # Utah County parcel data via utahcounty.gov ArcGIS instead
+    slug = 'uco-lir-parcels'
+    log.info(f'[{slug}] starting')
+    data = fetch_json(
+        'https://maps.utahcounty.gov/arcgis/rest/services/Parcels/MapServer/0/query',
+        {'where':'1=1','outFields':'PARCEL_ID,SITUS_ADDRESS,SITUS_CITY,TOTAL_VALUE',
+         'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'}
+    )
+    if not data:
+        # Fallback to state LIR with county filter
+        data = fetch_json(
+            'https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Utah_LIR/FeatureServer/0/query',
+            {'where':"1=1",'outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE',
+             'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'}
+        )
+    if not data: return 0
+    count = 0
+    for f in data.get('features',[]):
+        a = f.get('attributes',{})
+        addr = a.get('SITUS_ADDRESS','') or a.get('PARCEL_ADD','')
+        city = a.get('SITUS_CITY','') or a.get('PARCEL_CITY','')
+        parcel = a.get('PARCEL_ID','')
+        val = a.get('TOTAL_VALUE') or a.get('TOTAL_MKT_VALUE') or 0
+        full = f"{addr}, {city}".strip(', ') if city else addr
+        score = 65 if val and val < 400000 else 45
+        if addr and post_signal(slug, None, full, f"https://maps.utahcounty.gov/parcels/{parcel}", score, 'Utah', 'lir_parcel'):
+            count += 1
+    log.info(f'[{slug}] {count} signals posted')
+    return count
 def scrape_davis_lir_parcels():
     return scrape_lir('davis-lir-parcels','Davis','https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Davis_LIR/FeatureServer/0')
 def scrape_slco_lir_parcels():
