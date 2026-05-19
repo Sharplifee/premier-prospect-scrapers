@@ -3,7 +3,7 @@ Premier Prospect — GitHub Actions Scraper Runner v6
 Apify fetch + text-based parsing (no HTML/soup needed).
 24 active sources. Fully tested parsers.
 """
-import os, hashlib, logging, requests
+import os, hashlib, logging, requests, re
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('pp.scrapers')
