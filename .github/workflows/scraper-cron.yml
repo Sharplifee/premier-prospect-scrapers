@@ -2,17 +2,18 @@ name: Premier Prospect Scrapers
 
 on:
   schedule:
-    - cron: '0 6,12,18,0 * * *'   # runs 4x daily at 6am, noon, 6pm, midnight UTC
-  workflow_dispatch:                # also lets you trigger manually from GitHub UI
+    - cron: '0 6,12,18,0 * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +24,7 @@ jobs:
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 pdfplumber psycopg[binary] httpx
+        run: pip install requests beautifulsoup4 pdfplumber httpx
 
       - name: Run scrapers
         run: python scrapers/run_all.py
