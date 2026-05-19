@@ -319,15 +319,24 @@ def scrape_utah_county_real_property():
 def scrape_utah_county_tax_delinquency():
     slug = 'utah-county-tax-delinquency'
     log.info(f'[{slug}] starting')
-    soup = fetch('https://www.utahcounty.gov/Dept/Treas/delinquent')
-    if not soup: return 0
+    # Try multiple Utah County tax delinquency entry points
+    urls = [
+        'https://www.utahcounty.gov/Dept/Treas/',
+        'https://www.utahcounty.gov/treasurer/',
+        'https://propertytax.utah.gov/',
+    ]
     count = 0
-    for row in soup.find_all(['tr','li','div','p']):
-        text = row.get_text(separator=' ', strip=True)
-        if 20 < len(text) < 400 and any(c.isdigit() for c in text) and any(w in text.lower() for w in ['delinquent','tax','parcel','owner','property']):
-            if post_signal(slug, None, text[:300], 'https://www.utahcounty.gov/Dept/Treas/delinquent', 80, 'Utah', 'tax_delinquency'):
-                count += 1
-            if count >= 40: break
+    for src_url in urls:
+        soup = fetch(src_url)
+        if not soup: continue
+        for a in soup.find_all('a', href=True):
+            text = a.get_text(strip=True)
+            href = a.get('href','')
+            if any(w in (text+href).lower() for w in ['delinquent','tax sale','lien','delinquency','tax notice']) and len(text) > 3:
+                full = f"https://www.utahcounty.gov{href}" if href.startswith('/') else href
+                if post_signal(slug, text, None, full, 80, 'Utah', 'tax_delinquency'):
+                    count += 1
+        if count > 0: break
     log.info(f'[{slug}] {count} signals posted')
     return count
 
@@ -430,7 +439,7 @@ def scrape_lir_arcgis(slug, county, service_url, max_records=200):
     try:
         params = {
             'where': '1=1',
-            'outFields': 'OWNER_NAME,SITUS_ADDR,PARCEL_ID,LAND_VALUE,TOTAL_VALUE,PROP_CLASS',
+            'outFields': 'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE,PROP_CLASS,PRIMARY_RES',
             'resultRecordCount': max_records,
             'orderByFields': 'OBJECTID DESC',
             'f': 'json',
@@ -439,14 +448,15 @@ def scrape_lir_arcgis(slug, county, service_url, max_records=200):
         data = r.json()
         for feat in data.get('features', []):
             attrs = feat.get('attributes', {})
-            owner = attrs.get('OWNER_NAME','')
-            address = attrs.get('SITUS_ADDR','')
+            address = attrs.get('PARCEL_ADD','')
+            city = attrs.get('PARCEL_CITY','')
             parcel = attrs.get('PARCEL_ID','')
-            value = attrs.get('TOTAL_VALUE', 0) or 0
-            score = 60 if value < 300000 else 40
+            value = attrs.get('TOTAL_MKT_VALUE') or 0
+            full_address = f"{address}, {city}".strip(', ') if city else address
+            score = 65 if value and value < 400000 else 45
             url = f"{service_url}/query?where=PARCEL_ID='{parcel}'"
-            if owner or address:
-                if post_signal(slug, owner, address, url, score, county, 'lir_parcel'):
+            if address:
+                if post_signal(slug, None, full_address, url, score, county, 'lir_parcel'):
                     count += 1
     except Exception as e:
         log.error(f'[{slug}] {e}')
