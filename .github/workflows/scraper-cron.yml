@@ -29,4 +29,14 @@ jobs:
         run: pip install requests beautifulsoup4 pdfplumber httpx
 
       - name: Run scrapers
+        id: scrapers
         run: python scrapers/run_all.py
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_SID }}/Messages.json" \
+            --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" \
+            --data-urlencode "From=${{ secrets.TWILIO_FROM }}" \
+            --data-urlencode "To=${{ secrets.ALERT_TO }}" \
+            --data-urlencode "Body=⚠️ Premier Prospect: scraper run #${{ github.run_number }} failed. Check https://github.com/Sharplifee/premier-prospect-scrapers/actions"
