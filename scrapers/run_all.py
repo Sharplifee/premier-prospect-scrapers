@@ -416,43 +416,31 @@ def scrape_weber_lir_parcels():
 # ─── FIRE MARSHAL SOURCES (plain HTML — no browser needed) ──────────────────
 
 def scrape_fire_marshal(slug, path, signal_type, county='Utah'):
-    """Utah State Fire Marshal licensee tables — static HTML, full address data."""
+    """Utah State Fire Marshal licensee tables — static HTML, direct parse, all rows."""
     log.info(f'[{slug}] starting')
-    lines = apify_text(f'https://firemarshal.utah.gov/licensees/{path}')
-    if not lines:
-        # Fallback: direct fetch (these are plain HTML)
-        try:
-            import urllib.request
-            from bs4 import BeautifulSoup
-            req = urllib.request.Request(
-                f'https://firemarshal.utah.gov/licensees/{path}',
-                headers={'User-Agent': 'PremierProspect/6.0'}
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                soup = BeautifulSoup(resp.read(), 'html.parser')
-            rows = soup.find_all('tr')
-            count = 0
-            for row in rows[1:]:
-                cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                if len(cols) >= 4 and cols[0]:
-                    company = cols[0]
-                    address = f"{cols[1]}, {cols[2]}, {cols[3]} {cols[4]}".strip(', ') if len(cols) > 4 else cols[1]
-                    phone = cols[5] if len(cols) > 5 else ''
-                    full = f"{company} | {address} | {phone}".strip(' | ')
-                    if post_signal(slug, company, address, f'https://firemarshal.utah.gov/licensees/{path}', 30, county, signal_type):
-                        count += 1
-            log.info(f'[{slug}] {count} signals posted (direct)')
-            return count
-        except Exception as e:
-            log.error(f'[{slug}] direct fetch failed: {e}')
-    count = 0
-    # Parse text format
-    for line in lines:
-        if any(c.isdigit() for c in line) and len(line) > 10 and '|' not in line:
-            if post_signal(slug, None, line[:200], f'https://firemarshal.utah.gov/licensees/{path}', 30, county, signal_type):
-                count += 1
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    src_url = f'https://firemarshal.utah.gov/licensees/{path}'
+    try:
+        from bs4 import BeautifulSoup
+        r = SESSION.get(src_url, timeout=20)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'html.parser')
+        rows = soup.find_all('tr')
+        count = 0
+        for row in rows[1:]:  # skip header
+            cols = [td.get_text(strip=True) for td in row.find_all('td')]
+            if len(cols) >= 3 and cols[0]:
+                company = cols[0]
+                street  = cols[1] if len(cols) > 1 else ''
+                city    = cols[2] if len(cols) > 2 else ''
+                state   = cols[3] if len(cols) > 3 else 'UT'
+                address = f"{street}, {city}, {state}".strip(', ')
+                if post_signal(slug, company, address, src_url, 30, county, signal_type):
+                    count += 1
+        log.info(f'[{slug}] {count} signals posted')
+        return count
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+        return 0
 
 def scrape_fire_marshal_lp_hvac():
     return scrape_fire_marshal('fire-marshal-lp-hvac', 'lp-gas-hvac-companies', 'contractor_license')
@@ -558,10 +546,55 @@ def _scrape_accela(slug, agency, module, county, signal_type, score):
     return count
 
 def scrape_slc_accela_building():
-    return _scrape_accela('slc-permits-accela-building', 'SLCREF', 'Building', 'Salt Lake', 'building_permit', 50)
+    """SLC building permits via Socrata open data API — no auth needed."""
+    slug = 'slc-permits-accela-building'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        # SLC publishes permit data via data.slcgov.com Socrata
+        for api_url in [
+            'https://data.slcgov.com/resource/mamu-wqgz.json?$limit=200&$order=issued_date DESC',
+            'https://data.slcgov.com/resource/building-permits.json?$limit=200',
+        ]:
+            r = SESSION.get(api_url, timeout=15)
+            if r.status_code == 200:
+                records = r.json()
+                if isinstance(records, list) and records:
+                    for rec in records:
+                        addr = rec.get('location_1', {}).get('human_address','') or rec.get('address','') or rec.get('street_address','')
+                        permit_type = rec.get('permit_type','') or rec.get('type','')
+                        status = rec.get('status','')
+                        desc = f"{addr} | {permit_type} | {status}".strip(' |')
+                        if addr:
+                            if post_signal(slug, None, addr[:200], api_url, 50, 'Salt Lake', 'building_permit'):
+                                count += 1
+                    log.info(f'[{slug}] {count} signals (Socrata)')
+                    return count
+    except Exception as e:
+        log.error(f'[{slug}] Socrata failed: {e}')
+    # Fallback: Apify on permit search page
+    lines = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Building&TabName=HOME')
+    for line in lines:
+        if any(w in line.lower() for w in ['permit','building','issued','address']) and any(c.isdigit() for c in line) and 10 < len(line) < 200:
+            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/', 50, 'Salt Lake', 'building_permit'):
+                count += 1
+            if count >= 20: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
 
 def scrape_slc_accela_engineering():
-    return _scrape_accela('slc-permits-accela-engineering', 'SLCREF', 'Engineering', 'Salt Lake', 'engineering_permit', 45)
+    """SLC engineering permits via Apify citizen portal."""
+    slug = 'slc-permits-accela-engineering'
+    log.info(f'[{slug}] starting')
+    lines = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Engineering&TabName=HOME')
+    count = 0
+    for line in lines:
+        if any(w in line.lower() for w in ['permit','engineering','utility','excavation','grading']) and 10 < len(line) < 200:
+            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/', 45, 'Salt Lake', 'engineering_permit'):
+                count += 1
+            if count >= 20: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
 
 # ─── OREM BUILDING PERMITS (JS-rendered, use Apify) ─────────────────────────
 
@@ -671,12 +704,121 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v8 — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v10 — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
             total += fn() or 0
         except Exception as e:
             log.error(f'{fn.__name__} crashed: {e}')
-    log.info(f'=== Done — {total} total signals ===')
+    # Run convergence engine after all scrapers complete
+    try:
+        conv = run_convergence()
+        total += conv
+    except Exception as e:
+        log.error(f'convergence crashed: {e}')
+    log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
 
+
+
+# ─── CONVERGENCE ENGINE ───────────────────────────────────────────────────────
+
+def run_convergence():
+    """
+    Cross-reference all signals in Supabase by address.
+    Any address with 3+ independent source signals gets flagged HOT (score bump to 80+).
+    Writes convergence results back to a pp_convergence table.
+    """
+    log.info('[convergence] starting cross-reference scan')
+    try:
+        import urllib.request, json, hashlib
+        from collections import defaultdict
+
+        SUPA_URL = os.environ['SUPABASE_URL']
+        SUPA_KEY = os.environ['SUPABASE_SERVICE_KEY']
+        HEADERS = {
+            'Authorization': f'Bearer {SUPA_KEY}',
+            'apikey': SUPA_KEY,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+        }
+
+        # Pull all signals with addresses from last 30 days
+        req = urllib.request.Request(
+            f"{SUPA_URL}/rest/v1/pp_scraper_signals"
+            "?select=source_slug,raw_address,raw_owner_name,score,county,signal_type,captured_at"
+            "&raw_address=neq.&order=captured_at.desc&limit=5000"
+        )
+        for k, v in HEADERS.items():
+            req.add_header(k, v)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            signals = json.loads(r.read())
+
+        log.info(f'[convergence] {len(signals)} signals with addresses loaded')
+
+        # Group by normalized address
+        by_address = defaultdict(list)
+        for sig in signals:
+            addr = sig.get('raw_address', '').upper().strip()
+            # Normalize: remove apt/unit, extra spaces
+            import re
+            addr_norm = re.sub(r'\s+', ' ', re.sub(r'(APT|UNIT|STE|#)\s*[\w-]+', '', addr)).strip()
+            if len(addr_norm) > 8:
+                by_address[addr_norm].append(sig)
+
+        # Find convergences: 2+ different sources on same address
+        hot_addresses = []
+        for addr, sigs in by_address.items():
+            sources = set(s['source_slug'] for s in sigs)
+            if len(sources) >= 2:
+                score = min(17, 10 + len(sources) * 2)  # 2 sources = 14, 3+ = 16-17
+                county = sigs[0].get('county', 'Utah')
+                signal_types = list(set(s['signal_type'] for s in sigs))
+                hot_addresses.append({
+                    'address': addr,
+                    'sources': list(sources),
+                    'source_count': len(sources),
+                    'score': score,
+                    'county': county,
+                    'signal_types': signal_types,
+                })
+
+        log.info(f'[convergence] {len(hot_addresses)} addresses with 2+ source convergence')
+
+        # Post each convergence as a high-score signal
+        conv_count = 0
+        for hot in hot_addresses:
+            payload = {
+                'source_slug': 'convergence-engine',
+                'raw_address': hot['address'][:200],
+                'raw_owner_name': '',
+                'raw_url': '',
+                'score': hot['score'],
+                'county': hot['county'],
+                'signal_type': 'convergence',
+                'raw_payload': json.dumps({
+                    'sources': hot['sources'],
+                    'source_count': hot['source_count'],
+                    'signal_types': hot['signal_types'],
+                }),
+            }
+            req2 = urllib.request.Request(
+                f"{SUPA_URL}/rest/v1/pp_scraper_signals",
+                data=json.dumps(payload).encode(),
+                method='POST'
+            )
+            for k, v in HEADERS.items():
+                req2.add_header(k, v)
+            try:
+                with urllib.request.urlopen(req2, timeout=10) as r2:
+                    if r2.status in (201, 409):
+                        conv_count += 1
+            except Exception:
+                pass
+
+        log.info(f'[convergence] {conv_count} convergence signals posted')
+        return conv_count
+
+    except Exception as e:
+        log.error(f'[convergence] failed: {e}')
+        return 0
