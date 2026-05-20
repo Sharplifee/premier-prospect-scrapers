@@ -676,7 +676,7 @@ def scrape_utah_county_codev_browser():
 def run_convergence():
     """
     Cross-reference all signals in Supabase by address.
-    Any address with 3+ independent source signals gets flagged HOT (score bump to 80+).
+    Any address with 3+ independent source signals gets flagged Primed (score bump to 80+).
     Writes convergence results back to a pp_convergence table.
     """
     log.info('[convergence] starting cross-reference scan')
@@ -741,7 +741,7 @@ def run_convergence():
                     'signal_types': signal_types,
                 })
 
-        log.info(f'[convergence] {len(hot_addresses)} addresses with 2+ source convergence')
+        log.info(f'[convergence] {len(hot_addresses)} addresses with 2+ source convergence (Primed)')
 
         # Post each convergence as a high-score signal
         conv_count = 0
