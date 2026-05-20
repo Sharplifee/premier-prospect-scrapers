@@ -26,6 +26,38 @@ SESSION.headers['User-Agent'] = 'PremierProspect/6.0'
 MONTHS = ['January','February','March','April','May','June','July',
           'August','September','October','November','December']
 
+def ensure_run_log_table():
+    """Create pp_run_log table if it doesn't exist, using raw SQL via Supabase."""
+    pass  # Table must be created via Supabase dashboard SQL editor — see migrations/create_run_log.sql
+
+def write_run_log(slug, signal_count, status='success', error_msg=None):
+    """Write a run log entry to pp_run_log."""
+    import urllib.request, json as _json
+    SUPA_URL = os.environ.get('SUPABASE_URL','')
+    SUPA_KEY = os.environ.get('SUPABASE_SERVICE_KEY','')
+    if not SUPA_URL or not SUPA_KEY: return
+    payload = {
+        'source_slug': slug,
+        'run_at': __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+        'signal_count': signal_count,
+        'status': status,
+        'error_msg': error_msg,
+        'run_number': int(os.environ.get('GITHUB_RUN_NUMBER', 0)),
+    }
+    try:
+        req = urllib.request.Request(
+            f"{SUPA_URL}/rest/v1/pp_run_log",
+            data=_json.dumps(payload).encode(), method='POST'
+        )
+        req.add_header('apikey', SUPA_KEY)
+        req.add_header('Authorization', f'Bearer {SUPA_KEY}')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('Prefer', 'return=minimal')
+        with urllib.request.urlopen(req, timeout=5) as r:
+            pass
+    except Exception:
+        pass  # Run log is non-critical — never block scraper execution
+
 def post_signal(slug, owner, address, url, score, county, signal_type):
     payload = {
         'source_slug': slug,
@@ -716,12 +748,19 @@ def run_convergence():
             addr = sig.get('raw_address', '').upper().strip()
             # Normalize: remove apt/unit, extra spaces
             import re
-            # Normalize to just street number + name (drop city, state, zip)
-            # "1247 N 400 E, OREM, UT 84057" -> "1247 N 400 E"
+            # Normalize address for cross-source matching
+            # Strip city/state/zip, unit numbers, extra spaces
+            # "1247 N 400 E, Orem, UT 84057" -> "1247 N 400 E"
             street_only = addr_norm.split(',')[0].strip()
-            street_only = re.sub(r'(APT|UNIT|STE|#|SUITE)\s*[\w-]+', '', street_only).strip()
-            street_only = re.sub(r'\s+', ' ', street_only).strip()
-            if len(street_only) > 5:
+            street_only = re.sub(r'(?:APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', street_only, flags=re.IGNORECASE).strip()
+            street_only = re.sub(r'\s+', ' ', street_only).strip().upper()
+            # Also try just the house number + first word (catches format variations)
+            parts = street_only.split()
+            short_key = ' '.join(parts[:3]) if len(parts) >= 3 else street_only
+            if len(short_key) > 4:
+                by_address[short_key].append(sig)
+            # Also index full street for exact matches
+            if len(street_only) > 8 and street_only != short_key:
                 by_address[street_only].append(sig)
 
         # Find convergences: 2+ different sources on same address
@@ -829,9 +868,12 @@ if __name__ == '__main__':
     total = 0
     for fn in SCRAPERS:
         try:
-            total += fn() or 0
+            n = fn() or 0
+            total += n
+            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
         except Exception as e:
             log.error(f'{fn.__name__} crashed: {e}')
+            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
     # Run convergence engine after all scrapers complete
     try:
         conv = run_convergence()
@@ -847,9 +889,12 @@ if __name__ == '__main__':
     total = 0
     for fn in SCRAPERS:
         try:
-            total += fn() or 0
+            n = fn() or 0
+            total += n
+            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
         except Exception as e:
             log.error(f'{fn.__name__} crashed: {e}')
+            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
     # Run convergence engine after all scrapers complete
     try:
         conv = run_convergence()
