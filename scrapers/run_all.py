@@ -693,11 +693,15 @@ def run_convergence():
             'Prefer': 'return=minimal',
         }
 
-        # Pull all signals with addresses from last 30 days
+        # Pull ALL distress signals with addresses — exclude bulk reference data
+        # Reference data (lir_parcel, contractor_license) only used for cross-ref, not as base
+        DISTRESS_TYPES = 'obituary,tax_sale,tax_delinquency,nts_notice,fsbo,code_enforcement,surplus,probate_notice,building_permit,deed_transfer,property_record,real_property_record,assessor_record,surplus_property,engineering_permit,permit'
         req = urllib.request.Request(
             f"{SUPA_URL}/rest/v1/pp_scraper_signals"
             "?select=source_slug,raw_address,raw_owner_name,score,county,signal_type,captured_at"
-            "&raw_address=neq.&order=captured_at.desc&limit=5000"
+            f"&raw_address=neq."
+            f"&signal_type=in.({DISTRESS_TYPES})"
+            "&order=captured_at.desc&limit=10000"
         )
         for k, v in HEADERS.items():
             req.add_header(k, v)
@@ -712,9 +716,13 @@ def run_convergence():
             addr = sig.get('raw_address', '').upper().strip()
             # Normalize: remove apt/unit, extra spaces
             import re
-            addr_norm = re.sub(r'\s+', ' ', re.sub(r'(APT|UNIT|STE|#)\s*[\w-]+', '', addr)).strip()
-            if len(addr_norm) > 8:
-                by_address[addr_norm].append(sig)
+            # Normalize to just street number + name (drop city, state, zip)
+            # "1247 N 400 E, OREM, UT 84057" -> "1247 N 400 E"
+            street_only = addr_norm.split(',')[0].strip()
+            street_only = re.sub(r'(APT|UNIT|STE|#|SUITE)\s*[\w-]+', '', street_only).strip()
+            street_only = re.sub(r'\s+', ' ', street_only).strip()
+            if len(street_only) > 5:
+                by_address[street_only].append(sig)
 
         # Find convergences: 2+ different sources on same address
         hot_addresses = []
