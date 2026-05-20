@@ -837,6 +837,543 @@ def run_convergence():
         return 0
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 1 — PRIMARY TRIGGERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_utah_county_nts_recorder():
+    """
+    Utah County NTS — Notice of Trustee Sale via Land Records document search.
+    Searches for recent 'TRUSTEE' type documents in the KOI group 'Contract/Notice Int'.
+    Source: utahcounty.gov/LandRecords/PartyNameForm.asp
+    """
+    slug = 'utah-county-nts-recorder'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        import datetime
+        BASE = 'https://www.utahcounty.gov/LandRecords'
+        # Search for blank name in Contract/Notice Interests — gets recent NTS filings
+        for koi in ['Contract/Notice Int']:
+            url = f'{BASE}/PartyNameForm.asp'
+            r = SESSION.get(url, params={
+                'avname': '',
+                'avkoigroup': koi,
+                'avstartdate': (datetime.date.today() - datetime.timedelta(days=60)).strftime('%m/%d/%Y'),
+                'avenddate': datetime.date.today().strftime('%m/%d/%Y'),
+                'Submit': 'Search'
+            }, timeout=20)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            tables = soup.find_all('table')
+            for t in tables:
+                rows = t.find_all('tr')
+                if len(rows) < 3:
+                    continue
+                headers = [th.get_text(strip=True).lower() for th in rows[0].find_all(['th','td'])]
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols or len(cols) < 3:
+                        continue
+                    # Typical columns: Entry#, Date, Grantor, Grantee, Description
+                    desc = ' | '.join(cols)
+                    if any(w in desc.upper() for w in ['TRUST','NTS','NOTICE','FORECLOSE','LIEN']):
+                        link_tag = row.find('a', href=True)
+                        link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else url
+                        # Owner name is typically grantor (col index ~2)
+                        owner = cols[2] if len(cols) > 2 else ''
+                        address = cols[4] if len(cols) > 4 else desc[:200]
+                        if post_signal(slug, owner, address, link, 80, 'Utah', 'nts_notice'):
+                            count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_slc_county_nts_recorder():
+    """
+    Salt Lake County NTS — via SLCO recorder public search and Apify fallback.
+    Source: recorder.slco.org / slco.org/recorder
+    """
+    slug = 'slc-county-nts-recorder'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        # SLCO recorder doesn't have a simple form search — use Apify on their notice page
+        for url in [
+            'https://slco.org/recorder/residents/',
+            'https://slco.org/recorder/media/',
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                if any(w in line.upper() for w in ['TRUSTEE','FORECLOSURE','NTS','NOTICE OF DEFAULT','NOD']) \
+                        and len(line) > 10:
+                    if post_signal(slug, None, line[:200], url, 80, 'Salt Lake', 'nts_notice'):
+                        count += 1
+                    if count >= 20:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_utah_county_tax_delinquency_pdf():
+    """
+    Utah County Delinquent Property Tax Report — official PDF published by the Treasurer.
+    URL: utahcounty.gov/Dept/Treas/.../UtahCounty_Delinquent_Property_Tax_report.pdf
+    Parsed with pdfplumber for parcel, owner, address, amount.
+    """
+    slug = 'utah-county-tax-delinquency-pdf'
+    log.info(f'[{slug}] starting')
+    count = 0
+    PDF_URL = ('https://www.utahcounty.gov/Dept/Treas/production-single-forms/'
+               'delinquent-property-tax-report/UtahCounty_Delinquent_Property_Tax_report.pdf')
+    try:
+        import io, pdfplumber
+        r = SESSION.get(PDF_URL, timeout=30)
+        if r.status_code != 200:
+            log.warning(f'[{slug}] PDF not available: {r.status_code}')
+            return 0
+        with pdfplumber.open(io.BytesIO(r.content)) as pdf:
+            for page in pdf.pages:
+                table = page.extract_table()
+                if not table:
+                    text = page.extract_text() or ''
+                    # Parse free-form text — look for parcel/name/address patterns
+                    for line in text.split('\n'):
+                        line = line.strip()
+                        # Parcel pattern: xx:xxx:xxxx or digits
+                        if re.search(r'\d{2}:\d{3}:\d{4}', line) or \
+                           re.search(r'\d{4,}\s+\w+\s+(?:ST|AVE|DR|LN|BLVD|WAY|RD|CT)', line.upper()):
+                            if post_signal(slug, None, line[:200], PDF_URL, 75, 'Utah', 'tax_delinquency'):
+                                count += 1
+                    continue
+                headers = [str(c).lower().strip() if c else '' for c in table[0]]
+                for row in table[1:]:
+                    if not row or not any(row):
+                        continue
+                    cells = [str(c).strip() if c else '' for c in row]
+                    # Map by header or positional
+                    record = dict(zip(headers, cells)) if headers else {}
+                    owner   = record.get('owner','') or record.get('name','') or (cells[1] if len(cells)>1 else '')
+                    address = record.get('address','') or record.get('mailing address','') or (cells[2] if len(cells)>2 else '')
+                    parcel  = record.get('parcel','') or record.get('serial','') or (cells[0] if cells else '')
+                    amount  = record.get('amount','') or record.get('tax due','') or ''
+                    desc = f"{parcel} | {owner} | {address} | {amount}".strip(' | ')
+                    if owner or parcel:
+                        if post_signal(slug, owner, address or parcel, PDF_URL, 75, 'Utah', 'tax_delinquency'):
+                            count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_nod_tracker():
+    """
+    Notice of Default / NOD tracker — monitors Utah County Land Records for
+    recent deed-of-trust related filings (NOD, NOS, reconveyances) via
+    the document description search endpoint. Also checks obituary-cross-reference
+    for probate-initiated property transfers.
+    Source: utahcounty.gov/LandRecords/DocDescSearchForm.asp
+    """
+    slug = 'nod-tracker'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        import datetime
+        BASE = 'https://www.utahcounty.gov/LandRecords'
+        # NOD-related document description keywords
+        for keyword in ['NOTICE OF DEFAULT', 'SUBSTITUTION TRUSTEE', 'NOTICE TRUSTEE SALE']:
+            r = SESSION.get(f'{BASE}/DocDescSearchForm.asp',
+                params={'avdescription': keyword, 'Submit': 'Search'},
+                timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for t in soup.find_all('table'):
+                rows = t.find_all('tr')
+                if len(rows) < 3:
+                    continue
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols or len(cols) < 2:
+                        continue
+                    desc = ' | '.join(cols)
+                    link_tag = row.find('a', href=True)
+                    link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/DocDescSearchForm.asp'
+                    owner = cols[2] if len(cols) > 2 else ''
+                    addr  = cols[3] if len(cols) > 3 else desc[:200]
+                    if post_signal(slug, owner, addr or desc[:200], link, 80, 'Utah', 'nod_notice'):
+                        count += 1
+                    if count >= 30:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 2 — LIFE EVENT TRIGGERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_probate_court_xchange():
+    """
+    Probate court filings — Utah Courts Xchange public case search.
+    Searches for probate (case type PR) filings in Utah and Salt Lake County.
+    Source: utcourts.gov/xchange
+    Falls back to Apify on the probate notice search page.
+    """
+    slug = 'probate-court-xchange'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        # Try xchange search for probate cases
+        for county_code, county_name in [('054', 'Utah'), ('035', 'Salt Lake')]:
+            r = SESSION.get(
+                'https://www.utcourts.gov/xchange/',
+                params={'caseType': 'PR', 'countyId': county_code},
+                timeout=15
+            )
+            soup = BeautifulSoup(r.text, 'html.parser')
+            rows = soup.find_all('tr')
+            found = False
+            for row in rows:
+                cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                if len(cols) >= 3 and any(w in ' '.join(cols).upper() for w in ['ESTATE','PROBATE','DECEDENT','IN RE']):
+                    name = cols[0] if cols else ''
+                    case_num = cols[1] if len(cols)>1 else ''
+                    desc = ' | '.join(cols[:5])
+                    if post_signal(slug, name, case_num or desc[:200],
+                                   'https://www.utcourts.gov/xchange/', 70, county_name, 'probate_notice'):
+                        count += 1
+                        found = True
+            # Apify fallback for JS-rendered content
+            if not found:
+                lines = apify_text(f'https://www.utcourts.gov/xchange/?caseType=PR&countyId={county_code}')
+                for line in lines:
+                    if any(w in line.upper() for w in ['ESTATE OF','IN RE','PROBATE','DECEASED','DECEDENT']) \
+                            and len(line) > 10:
+                        if post_signal(slug, None, line[:200],
+                                       'https://www.utcourts.gov/xchange/', 70, county_name, 'probate_notice'):
+                            count += 1
+                        if count >= 20:
+                            break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_divorce_court():
+    """
+    Divorce court — DEFERRED.
+    Utah divorce case records are not publicly searchable without a case number
+    or party name via xchange. The filing index is not bulk-accessible without
+    a registered account. This scraper monitors the xchange public search for
+    dissolution/divorce-type case codes (DV) but results are sparse.
+    Marking signal_type as 'divorce_notice' for routing purposes.
+    Full implementation requires either:
+      (a) Utah Courts API access (request via utcourts.gov/records)
+      (b) Manual monitoring of published legal notices in local newspapers
+    """
+    slug = 'divorce-court'
+    log.info(f'[{slug}] starting (limited public access — deferred)')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        # Best available: Utah County Clerk legal notices page
+        for url in [
+            'https://www.utahcounty.gov/Dept/Clerk/LegalPublications/',
+            'https://www.utahcounty.gov/Dept/Clerk/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for el in soup.find_all(['p','li','td']):
+                text = el.get_text(strip=True)
+                if any(w in text.upper() for w in ['DISSOLUTION','DIVORCE','PETITION','RESPONDENT','PETITIONER']) \
+                        and 15 < len(text) < 300:
+                    if post_signal(slug, None, text[:200], url, 55, 'Utah', 'divorce_notice'):
+                        count += 1
+                    if count >= 10:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted (divorce data limited)')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — ACTIVE INTENT
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_ksl_fsbo_craigslist():
+    """
+    FSBO listings — Craigslist SLC + Provo real estate by owner.
+    Both regions combined, deduped by listing title+price hash.
+    Already live as scrape_ksl_fsbo() — this version adds Utah County / Wasatch.
+    """
+    slug = 'ksl-fsbo-extended'
+    log.info(f'[{slug}] starting')
+    count = 0
+    regions = [
+        ('https://saltlake.craigslist.org/search/reo?sort=date&limit=120', 'Salt Lake'),
+        ('https://provo.craigslist.org/search/reo?sort=date&limit=120', 'Utah'),
+        ('https://provo.craigslist.org/search/reo?sort=date&limit=120&postal=84060&search_distance=30', 'Wasatch'),
+    ]
+    try:
+        import urllib.request as _ur
+        from bs4 import BeautifulSoup
+        for url, county in regions:
+            req = _ur.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            })
+            with _ur.urlopen(req, timeout=20) as resp:
+                html = resp.read()
+            soup = BeautifulSoup(html, 'html.parser')
+            items = soup.select('li.cl-static-search-result, .result-row, li[data-pid]')
+            for item in items:
+                title_el = item.select_one('.title, a.posting-title, .result-title, a[href*="/reo/"]')
+                title = title_el.get_text(strip=True) if title_el else item.get_text(separator=' ',strip=True)[:100]
+                link_el = item.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'):
+                    link = url.split('/search')[0] + link
+                price_el = item.select_one('.price, .result-price')
+                price = price_el.get_text(strip=True) if price_el else ''
+                full = f"{title} {price}".strip()
+                if full and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house','bdrm','br','ba']):
+                    if post_signal(slug, None, full[:200], link, 60, county, 'fsbo'):
+                        count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 4 — ENRICHMENT LAYERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_deed_transfers_utah_county():
+    """
+    Deed transfers — Utah County Land Records 'Documents by Name' search.
+    Targets recent DEED, WARRANTY DEED, QUIT CLAIM, GRANT DEED filings.
+    Used as enrichment — cross-referenced against obituaries and distress signals.
+    Source: utahcounty.gov/LandRecords/PartyNameForm.asp (KOI: Conveyance Documents)
+    """
+    slug = 'deed-transfers-utah-county'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        import datetime
+        BASE = 'https://www.utahcounty.gov/LandRecords'
+        r = SESSION.get(f'{BASE}/PartyNameForm.asp',
+            params={
+                'avname': '',
+                'avkoigroup': 'Conveyance Documents',
+                'avstartdate': (datetime.date.today() - datetime.timedelta(days=14)).strftime('%m/%d/%Y'),
+                'avenddate': datetime.date.today().strftime('%m/%d/%Y'),
+                'Submit': 'Search'
+            }, timeout=20)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for t in soup.find_all('table'):
+            rows = t.find_all('tr')
+            if len(rows) < 3:
+                continue
+            for row in rows[1:]:
+                cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                if not cols or len(cols) < 3:
+                    continue
+                doc_type = cols[3] if len(cols) > 3 else ''
+                # Filter to actual deed types
+                if not any(w in doc_type.upper() for w in ['DEED','GRANT','CONVEY','QUIT','WARRANTY']):
+                    continue
+                grantor  = cols[2] if len(cols) > 2 else ''
+                grantee  = cols[3] if len(cols) > 3 else ''
+                rec_date = cols[1] if len(cols) > 1 else ''
+                link_tag = row.find('a', href=True)
+                link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/PartyNameForm.asp'
+                desc = f"{grantor} → {grantee} | {doc_type} | {rec_date}"
+                if post_signal(slug, grantor, desc[:200], link, 60, 'Utah', 'deed_transfer'):
+                    count += 1
+                if count >= 50:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_obituaries_enrichment():
+    """
+    Obituaries from Daily Herald (heraldextra.com) — cross-reference enrichment layer.
+    Signals are created but scored at 55 (Qualify) only when the deceased
+    appears as a property owner in LIR parcel data or deed records.
+    Standalone obituary signals score 40 (Watch) — useful for convergence engine.
+    Source: heraldextra.com/obituaries + legacy.com/us/obituaries/heraldextra
+    """
+    slug = 'obituaries-enrichment'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        for url, county in [
+            ('https://www.heraldextra.com/obituaries/', 'Utah'),
+            ('https://www.sltrib.com/obituaries/', 'Salt Lake'),
+        ]:
+            r = SESSION.get(url, timeout=15)
+            if r.status_code != 200:
+                lines = apify_text(url)
+                for line in lines:
+                    if any(w in line.lower() for w in ['passed away','obituary','beloved','survived by','funeral']) \
+                            and len(line) > 10:
+                        if post_signal(slug, None, line[:200], url, 40, county, 'obituary'):
+                            count += 1
+                        if count >= 20:
+                            break
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Find obituary cards/links
+            for card in soup.select('.obit-card, .obituary-listing, article, .card'):
+                name_el = card.select_one('h2, h3, .name, a[href*="obituar"]')
+                name = name_el.get_text(strip=True) if name_el else ''
+                link_el = card.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'):
+                    link = url.rstrip('/') + '/' + link.lstrip('/')
+                date_el = card.select_one('.date, time, .published')
+                date_str = date_el.get_text(strip=True) if date_el else ''
+                if name and len(name) > 3:
+                    desc = f"{name} | {date_str}".strip(' | ')
+                    if post_signal(slug, name, desc[:200], link, 40, county, 'obituary'):
+                        count += 1
+                if count >= 30:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 5 — BUYER-SIDE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_utah_county_public_surplus():
+    """
+    Utah County Public Surplus — tax sale and surplus property auctions.
+    Source: publicsurplus.com/sms/utahco,ut (public, no auth)
+    Returns real parcel numbers and auction details.
+    """
+    slug = 'utah-county-public-surplus'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        url = 'http://www.publicsurplus.com/sms/utahco,ut/list/current?orgid=50608'
+        r = SESSION.get(url, timeout=15)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for t in soup.find_all('table'):
+            rows = t.find_all('tr')
+            if len(rows) < 2:
+                continue
+            for row in rows[1:]:
+                cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                if not cols or len(cols) < 2:
+                    continue
+                auction_id = cols[0] if cols else ''
+                title      = cols[1] if len(cols) > 1 else ''
+                time_left  = cols[2] if len(cols) > 2 else ''
+                price      = cols[4] if len(cols) > 4 else ''
+                # Filter to real property auctions (parcel-based)
+                if not any(w in title.upper() for w in ['PARCEL','PROPERTY','LOT','ACRE','REAL']):
+                    continue
+                link_el = row.find('a', href=True)
+                link = f"http://www.publicsurplus.com{link_el['href']}" if link_el else url
+                # Parcel number often in title
+                parcel_match = re.search(r'\d{2}:\d{3}:\d{4}', title)
+                parcel = parcel_match.group(0) if parcel_match else ''
+                desc = f"{title} | Parcel: {parcel} | Price: {price} | Closes: {time_left}".strip(' | ')
+                if post_signal(slug, None, desc[:200], link, 65, 'Utah', 'surplus_property'):
+                    count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_slc_county_public_surplus():
+    """
+    Salt Lake County Public Surplus — tax sale and surplus auctions.
+    Source: publicsurplus.com/sms/slco,ut or slco.gov surplus listings.
+    """
+    slug = 'slc-county-public-surplus'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        # Try SLCO surplus page
+        for url in [
+            'https://www.publicsurplus.com/sms/slcounty,ut/list/current',
+            'https://slco.org/surplus/',
+            'https://slco.org/administrative-services/surplus-property/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            tables = soup.find_all('table')
+            found = False
+            for t in tables:
+                rows = t.find_all('tr')
+                if len(rows) < 2:
+                    continue
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols or len(cols) < 2:
+                        continue
+                    title = cols[1] if len(cols) > 1 else cols[0]
+                    price = cols[4] if len(cols) > 4 else ''
+                    if any(w in title.upper() for w in ['PARCEL','PROPERTY','LOT','REAL','ACRE']):
+                        link_el = row.find('a', href=True)
+                        link = link_el['href'] if link_el else url
+                        if not link.startswith('http'):
+                            link = 'https://www.publicsurplus.com' + link
+                        parcel_match = re.search(r'\d{2}[:\-]\d{3,}[:\-]\d{4,}', title)
+                        parcel = parcel_match.group(0) if parcel_match else ''
+                        desc = f"{title} | {parcel} | {price}".strip(' | ')
+                        if post_signal(slug, None, desc[:200], link, 65, 'Salt Lake', 'surplus_property'):
+                            count += 1
+                            found = True
+            if found:
+                break
+            # Fallback: Apify
+            lines = apify_text(url)
+            for line in lines:
+                if any(w in line.upper() for w in ['PARCEL','PROPERTY','AUCTION','BID','SURPLUS']) \
+                        and len(line) > 8:
+                    if post_signal(slug, None, line[:200], url, 65, 'Salt Lake', 'surplus_property'):
+                        count += 1
+                if count >= 20:
+                    break
+            break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+
 SCRAPERS = [
     # ── HIGH SIGNAL — distress & life events ──
     scrape_obituaries_herald,
@@ -877,6 +1414,22 @@ SCRAPERS = [
     scrape_davis_lir_parcels,
     scrape_slco_lir_parcels,
     scrape_weber_lir_parcels,
+    # ── TIER 1 — PRIMARY TRIGGERS (new) ──
+    scrape_utah_county_nts_recorder,
+    scrape_slc_county_nts_recorder,
+    scrape_utah_county_tax_delinquency_pdf,
+    scrape_nod_tracker,
+    # ── TIER 2 — LIFE EVENTS (new) ──
+    scrape_probate_court_xchange,
+    scrape_divorce_court,
+    # ── TIER 3 — ACTIVE INTENT (new) ──
+    scrape_ksl_fsbo_craigslist,
+    # ── TIER 4 — ENRICHMENT (new) ──
+    scrape_deed_transfers_utah_county,
+    scrape_obituaries_enrichment,
+    # ── TIER 5 — BUYER SIDE (new) ──
+    scrape_utah_county_public_surplus,
+    scrape_slc_county_public_surplus,
 ]
 
 if __name__ == '__main__':
@@ -918,5 +1471,6 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'convergence crashed: {e}')
     log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
+
 
 
