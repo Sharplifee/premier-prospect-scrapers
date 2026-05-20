@@ -413,18 +413,49 @@ def scrape_weber_lir_parcels():
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 SCRAPERS = [
-    scrape_obituaries_herald, scrape_probate_court, scrape_utah_county_tax_delinquency,
-    scrape_utah_county_nts, scrape_slc_county_nts, scrape_slc_tax_sale,
-    scrape_wasatch_tax_sale, scrape_wasatch_county_nts, scrape_slc_assessor,
-    scrape_slc_real_estate, scrape_slc_public_surplus, scrape_wasatch_public_surplus,
-    scrape_south_slc_permits, scrape_south_slc_permits_pdf, scrape_utah_county_codev,
-    scrape_utah_county_directory, scrape_utah_county_property_info, scrape_utah_county_real_property,
-    scrape_uvhba_directory, scrape_ksl_fsbo,
-    scrape_uco_lir_parcels, scrape_davis_lir_parcels, scrape_slco_lir_parcels, scrape_weber_lir_parcels,
+    # ── HIGH SIGNAL — distress & life events ──
+    scrape_obituaries_herald,
+    scrape_probate_court,
+    scrape_utah_county_tax_delinquency,
+    scrape_utah_county_nts,
+    scrape_slc_county_nts,
+    scrape_slc_tax_sale,
+    scrape_wasatch_tax_sale,
+    scrape_wasatch_county_nts,
+    # ── PROPERTY RECORDS ──
+    scrape_slc_assessor,
+    scrape_slc_real_estate,
+    scrape_slc_public_surplus,
+    scrape_wasatch_public_surplus,
+    scrape_slc_city_real_estate,
+    # ── PERMITS ──
+    scrape_south_slc_permits,
+    scrape_south_slc_permits_pdf,
+    scrape_utah_county_codev,
+    scrape_utah_county_codev_browser,
+    scrape_utah_county_directory,
+    scrape_utah_county_property_info,
+    scrape_utah_county_real_property,
+    scrape_utah_county_building_permit,
+    scrape_slc_accela_building,
+    scrape_slc_accela_engineering,
+    scrape_orem_building_permits,
+    # ── FSBO & DIRECTORIES ──
+    scrape_uvhba_directory,
+    scrape_ksl_fsbo,
+    # ── FIRE MARSHAL LICENSE ROLLS ──
+    scrape_fire_marshal_lp_hvac,
+    scrape_fire_marshal_lp_gas,
+    scrape_fire_marshal_suppression,
+    # ── LIR PARCEL DATA ──
+    scrape_uco_lir_parcels,
+    scrape_davis_lir_parcels,
+    scrape_slco_lir_parcels,
+    scrape_weber_lir_parcels,
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v6 — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v8 — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -432,3 +463,150 @@ if __name__ == '__main__':
         except Exception as e:
             log.error(f'{fn.__name__} crashed: {e}')
     log.info(f'=== Done — {total} total signals ===')
+
+
+# ─── FIRE MARSHAL SOURCES (plain HTML — no browser needed) ──────────────────
+
+def scrape_fire_marshal(slug, path, signal_type, county='Utah'):
+    """Utah State Fire Marshal licensee tables — static HTML, full address data."""
+    log.info(f'[{slug}] starting')
+    lines = apify_text(f'https://firemarshal.utah.gov/licensees/{path}')
+    if not lines:
+        # Fallback: direct fetch (these are plain HTML)
+        try:
+            import urllib.request
+            from bs4 import BeautifulSoup
+            req = urllib.request.Request(
+                f'https://firemarshal.utah.gov/licensees/{path}',
+                headers={'User-Agent': 'PremierProspect/6.0'}
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                soup = BeautifulSoup(resp.read(), 'html.parser')
+            rows = soup.find_all('tr')
+            count = 0
+            for row in rows[1:]:
+                cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                if len(cols) >= 4 and cols[0]:
+                    company = cols[0]
+                    address = f"{cols[1]}, {cols[2]}, {cols[3]} {cols[4]}".strip(', ') if len(cols) > 4 else cols[1]
+                    phone = cols[5] if len(cols) > 5 else ''
+                    full = f"{company} | {address} | {phone}".strip(' | ')
+                    if post_signal(slug, company, address, f'https://firemarshal.utah.gov/licensees/{path}', 30, county, signal_type):
+                        count += 1
+            log.info(f'[{slug}] {count} signals posted (direct)')
+            return count
+        except Exception as e:
+            log.error(f'[{slug}] direct fetch failed: {e}')
+    count = 0
+    # Parse text format
+    for line in lines:
+        if any(c.isdigit() for c in line) and len(line) > 10 and '|' not in line:
+            if post_signal(slug, None, line[:200], f'https://firemarshal.utah.gov/licensees/{path}', 30, county, signal_type):
+                count += 1
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+def scrape_fire_marshal_lp_hvac():
+    return scrape_fire_marshal('fire-marshal-lp-hvac', 'lp-gas-hvac-companies', 'contractor_license')
+
+def scrape_fire_marshal_lp_gas():
+    return scrape_fire_marshal('fire-marshal-lp-gas', 'lp-gas-companies', 'contractor_license')
+
+def scrape_fire_marshal_suppression():
+    return scrape_fire_marshal('fire-marshal-suppression', 'fire-suppression', 'contractor_license')
+
+# ─── SLC ACCELA CITIZEN PORTAL (public search, no token) ────────────────────
+
+def scrape_slc_accela_building():
+    slug = 'slc-permits-accela-building'
+    log.info(f'[{slug}] starting')
+    # Public citizen portal — scrape via Apify
+    results = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Building&TabName=HOME')
+    count = 0
+    kw = ['permit','building','construction','address','issued','application','approved','residential','commercial']
+    for line in results:
+        if any(w in line.lower() for w in kw) and any(c.isdigit() for c in line) and 10 < len(line) < 300:
+            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Building', 50, 'Salt Lake', 'building_permit'):
+                count += 1
+            if count >= 30: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+def scrape_slc_accela_engineering():
+    slug = 'slc-permits-accela-engineering'
+    log.info(f'[{slug}] starting')
+    results = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Engineering&TabName=HOME')
+    count = 0
+    kw = ['permit','engineering','infrastructure','utility','excavation','grading','issued','application']
+    for line in results:
+        if any(w in line.lower() for w in kw) and 10 < len(line) < 300:
+            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Engineering', 45, 'Salt Lake', 'engineering_permit'):
+                count += 1
+            if count >= 30: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+# ─── OREM BUILDING PERMITS (JS-rendered, use Apify) ─────────────────────────
+
+def scrape_orem_building_permits():
+    slug = 'orem-building-permits'
+    log.info(f'[{slug}] starting')
+    lines = apify_text('https://www.orem.org/buildingpermits/')
+    count = 0
+    kw = ['permit','building','construction','address','issued','application','residential','commercial','approved','inspection']
+    for line in lines:
+        if any(w in line.lower() for w in kw) and len(line) > 10:
+            if post_signal(slug, None, line[:200], 'https://www.orem.org/buildingpermits/', 40, 'Utah', 'building_permit'):
+                count += 1
+            if count >= 20: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+# ─── UTAH COUNTY BUILDING PERMITS (WebLink doc portal) ──────────────────────
+
+def scrape_utah_county_building_permit():
+    slug = 'utah-county-building-permit'
+    log.info(f'[{slug}] starting')
+    lines = apify_text('https://codev.utahcounty.gov/building')
+    count = 0
+    kw = ['permit','building','construction','submittal','application','requirements','single family','commercial','inspection']
+    for line in lines:
+        if any(w in line.lower() for w in kw) and len(line) > 8:
+            if post_signal(slug, None, line[:200], 'https://codev.utahcounty.gov/building', 40, 'Utah', 'building_permit'):
+                count += 1
+            if count >= 15: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+# ─── SLC CITY REAL ESTATE SURPLUS ───────────────────────────────────────────
+
+def scrape_slc_city_real_estate():
+    slug = 'slc-city-real-estate'
+    log.info(f'[{slug}] starting')
+    lines = apify_text('https://www.slc.gov/can/res/real-estate/')
+    count = 0
+    kw = ['property','parcel','sale','available','purchase','bid','acre','square','land','building','opportunity']
+    for line in lines:
+        if any(w in line.lower() for w in kw) and 8 < len(line) < 300:
+            if post_signal(slug, None, line[:200], 'https://www.slc.gov/can/res/real-estate/', 50, 'Salt Lake', 'surplus_property'):
+                count += 1
+            if count >= 20: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+# ─── UTAH COUNTY CODEV BROWSER ──────────────────────────────────────────────
+
+def scrape_utah_county_codev_browser():
+    slug = 'utah-county-codev-browser'
+    log.info(f'[{slug}] starting')
+    lines = apify_text('https://codev.utahcounty.gov/')
+    count = 0
+    kw = ['violation','code','enforcement','complaint','nuisance','notice','citation','zoning','unsafe','abatement']
+    for line in lines:
+        if any(w in line.lower() for w in kw) and len(line) > 10:
+            if post_signal(slug, None, line[:200], 'https://codev.utahcounty.gov/', 50, 'Utah', 'code_enforcement'):
+                count += 1
+            if count >= 15: break
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
