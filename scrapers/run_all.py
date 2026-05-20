@@ -213,15 +213,30 @@ def scrape_slc_tax_sale():
     return count
 
 def scrape_wasatch_tax_sale():
+    """Wasatch County tax/delinquency — filter for property records, skip article text."""
     slug = 'wasatch-county-tax-sale'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://wasatch.utah.gov/departments/treasurer')
     count = 0
-    for line in lines:
-        if any(w in line.lower() for w in ['tax','property','treasurer','delinquent','sale','notice']) and 10 < len(line) < 300:
-            if post_signal(slug, None, line[:200], 'https://wasatch.utah.gov/departments/treasurer', 65, 'Wasatch', 'tax_sale'):
-                count += 1
-            if count >= 20: break
+    try:
+        from bs4 import BeautifulSoup
+        for url in [
+            'https://wasatch.utah.gov/departments/treasurer/property-tax',
+            'https://wasatch.utah.gov/departments/treasurer',
+        ]:
+            r = SESSION.get(url, timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for el in soup.find_all(['p','li','td','tr']):
+                text = el.get_text(separator=' ', strip=True)
+                has_digits = sum(c.isdigit() for c in text) > 3
+                has_kw = any(w in text.lower() for w in ['parcel','delinquent','owner','lien','notice of','sale date','tax id','account'])
+                is_article = len(text.split()) > 25 and not has_digits
+                if has_kw and has_digits and not is_article and 10 < len(text) < 250:
+                    if post_signal(slug, None, text[:200], url, 75, 'Wasatch', 'tax_sale'):
+                        count += 1
+                    if count >= 15: break
+            if count > 0: break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
     log.info(f'[{slug}] {count} signals posted')
     return count
 
@@ -751,6 +766,7 @@ def run_convergence():
             # Normalize address for cross-source matching
             # Strip city/state/zip, unit numbers, extra spaces
             # "1247 N 400 E, Orem, UT 84057" -> "1247 N 400 E"
+            addr_norm = re.sub(r'\s+', ' ', re.sub(r'(APT|UNIT|STE|#|SUITE)\s*[\w-]+', '', addr.upper())).strip()
             street_only = addr_norm.split(',')[0].strip()
             street_only = re.sub(r'(?:APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', street_only, flags=re.IGNORECASE).strip()
             street_only = re.sub(r'\s+', ' ', street_only).strip().upper()
