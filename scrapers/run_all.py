@@ -412,58 +412,6 @@ def scrape_weber_lir_parcels():
     return scrape_lir('weber-lir-parcels','Weber','https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Weber_LIR/FeatureServer/0')
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
-SCRAPERS = [
-    # ── HIGH SIGNAL — distress & life events ──
-    scrape_obituaries_herald,
-    scrape_probate_court,
-    scrape_utah_county_tax_delinquency,
-    scrape_utah_county_nts,
-    scrape_slc_county_nts,
-    scrape_slc_tax_sale,
-    scrape_wasatch_tax_sale,
-    scrape_wasatch_county_nts,
-    # ── PROPERTY RECORDS ──
-    scrape_slc_assessor,
-    scrape_slc_real_estate,
-    scrape_slc_public_surplus,
-    scrape_wasatch_public_surplus,
-    scrape_slc_city_real_estate,
-    # ── PERMITS ──
-    scrape_south_slc_permits,
-    scrape_south_slc_permits_pdf,
-    scrape_utah_county_codev,
-    scrape_utah_county_codev_browser,
-    scrape_utah_county_directory,
-    scrape_utah_county_property_info,
-    scrape_utah_county_real_property,
-    scrape_utah_county_building_permit,
-    scrape_slc_accela_building,
-    scrape_slc_accela_engineering,
-    scrape_orem_building_permits,
-    # ── FSBO & DIRECTORIES ──
-    scrape_uvhba_directory,
-    scrape_ksl_fsbo,
-    # ── FIRE MARSHAL LICENSE ROLLS ──
-    scrape_fire_marshal_lp_hvac,
-    scrape_fire_marshal_lp_gas,
-    scrape_fire_marshal_suppression,
-    # ── LIR PARCEL DATA ──
-    scrape_uco_lir_parcels,
-    scrape_davis_lir_parcels,
-    scrape_slco_lir_parcels,
-    scrape_weber_lir_parcels,
-]
-
-if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v8 — {len(SCRAPERS)} sources ===')
-    total = 0
-    for fn in SCRAPERS:
-        try:
-            total += fn() or 0
-        except Exception as e:
-            log.error(f'{fn.__name__} crashed: {e}')
-    log.info(f'=== Done — {total} total signals ===')
-
 
 # ─── FIRE MARSHAL SOURCES (plain HTML — no browser needed) ──────────────────
 
@@ -609,4 +557,57 @@ def scrape_utah_county_codev_browser():
             if count >= 15: break
     log.info(f'[{slug}] {count} signals posted')
     return count
+
+
+SCRAPERS = [
+    # ── HIGH SIGNAL — distress & life events ──
+    scrape_obituaries_herald,
+    scrape_probate_court,
+    scrape_utah_county_tax_delinquency,
+    scrape_utah_county_nts,
+    scrape_slc_county_nts,
+    scrape_slc_tax_sale,
+    scrape_wasatch_tax_sale,
+    scrape_wasatch_county_nts,
+    # ── PROPERTY RECORDS ──
+    scrape_slc_assessor,
+    scrape_slc_real_estate,
+    scrape_slc_public_surplus,
+    scrape_wasatch_public_surplus,
+    scrape_slc_city_real_estate,
+    # ── PERMITS ──
+    scrape_south_slc_permits,
+    scrape_south_slc_permits_pdf,
+    scrape_utah_county_codev,
+    scrape_utah_county_codev_browser,
+    scrape_utah_county_directory,
+    scrape_utah_county_property_info,
+    scrape_utah_county_real_property,
+    scrape_utah_county_building_permit,
+    scrape_slc_accela_building,
+    scrape_slc_accela_engineering,
+    scrape_orem_building_permits,
+    # ── FSBO & DIRECTORIES ──
+    scrape_uvhba_directory,
+    scrape_ksl_fsbo,
+    # ── FIRE MARSHAL LICENSE ROLLS ──
+    scrape_fire_marshal_lp_hvac,
+    scrape_fire_marshal_lp_gas,
+    scrape_fire_marshal_suppression,
+    # ── LIR PARCEL DATA ──
+    scrape_uco_lir_parcels,
+    scrape_davis_lir_parcels,
+    scrape_slco_lir_parcels,
+    scrape_weber_lir_parcels,
+]
+
+if __name__ == '__main__':
+    log.info(f'=== Premier Prospect v8 — {len(SCRAPERS)} sources ===')
+    total = 0
+    for fn in SCRAPERS:
+        try:
+            total += fn() or 0
+        except Exception as e:
+            log.error(f'{fn.__name__} crashed: {e}')
+    log.info(f'=== Done — {total} total signals ===')
 
