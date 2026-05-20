@@ -76,6 +76,43 @@ def post_signal(slug, owner, address, url, score, county, signal_type):
         log.error(f'POST failed {slug}: {e}')
         return False
 
+def post_signals_batch(records):
+    """Batch insert up to 500 signals. Returns count inserted."""
+    if not records:
+        return 0
+    import hashlib as _hl
+    seen = set()
+    unique = []
+    for rec in records:
+        h = rec.get('dedupe_hash') or _hl.md5(
+            f"{rec['source_slug']}|{rec.get('raw_url','')}|{rec.get('raw_owner_name','')}|{rec.get('raw_address','')}".encode()
+        ).hexdigest()
+        rec['dedupe_hash'] = h
+        if h not in seen:
+            seen.add(h)
+            unique.append(rec)
+    count = 0
+    CHUNK = 200
+    for i in range(0, len(unique), CHUNK):
+        chunk = unique[i:i+CHUNK]
+        for attempt in range(3):
+            try:
+                r = SESSION.post(
+                    TABLE_URL, json=chunk,
+                    headers={**TABLE_HEADERS, 'Prefer': 'return=minimal,resolution=ignore-duplicates'},
+                    timeout=30
+                )
+                if r.status_code in (200, 201, 409):
+                    count += len(chunk)
+                    break
+                log.error(f'Batch POST failed: {r.status_code} {r.text[:60]}')
+            except Exception as e:
+                log.error(f'Batch POST error: {e}')
+                if attempt < 2:
+                    time.sleep(10)
+    return count
+
+
 def apify_text(url):
     """Fetch via Apifyturn plain text lines."""
     try:
@@ -894,27 +931,37 @@ def scrape_utah_county_nts_recorder():
 
 def scrape_slc_county_nts_recorder():
     """
-    Salt Lake County NTS — via SLCO recorder public search and Apify fallback.
-    Source: recorder.slco.org / slco.org/recorder
+    Salt Lake County NTS — SLCO recorder does not have a public bulk NTS search.
+    Best available public source: Daily Herald and SL Tribune legal notices via Apify.
+    Filters strictly for NTS/foreclosure-specific content with parcel/address patterns.
     """
     slug = 'slc-county-nts-recorder'
     log.info(f'[{slug}] starting')
     count = 0
     try:
         from bs4 import BeautifulSoup
-        # SLCO recorder doesn't have a simple form search — use Apify on their notice page
-        for url in [
-            'https://slco.org/recorder/residents/',
-            'https://slco.org/recorder/media/',
+        # Use tribune legal notice submissions page — NTS notices are published here by law
+        for url, county in [
+            ('https://www.sltrib.com/legal-notices/', 'Salt Lake'),
+            ('https://www.heraldextra.com/classifieds/legal_notices/', 'Utah'),
         ]:
             lines = apify_text(url)
             for line in lines:
-                if any(w in line.upper() for w in ['TRUSTEE','FORECLOSURE','NTS','NOTICE OF DEFAULT','NOD']) \
-                        and len(line) > 10:
-                    if post_signal(slug, None, line[:200], url, 80, 'Salt Lake', 'nts_notice'):
+                # Must match NTS/foreclosure pattern AND contain address/parcel data
+                is_nts = any(w in line.upper() for w in [
+                    'NOTICE OF TRUSTEE', 'TRUSTEE SALE', 'NTS', 'NOTICE OF DEFAULT',
+                    'FORECLOSURE', 'DEED OF TRUST', 'T.S. NO', 'TS NO', 'TRUSTEE SALE',
+                ])
+                has_data = (
+                    re.search(r'\d{4,}\s+\w', line) or  # street address
+                    re.search(r'\d{2}[:-]\d{3}[:-]\d{4}', line) or  # parcel
+                    re.search(r'\$[\d,]+', line)  # dollar amount
+                )
+                if is_nts and has_data and 20 < len(line) < 400:
+                    if post_signal(slug, None, line[:200], url, 80, county, 'nts_notice'):
                         count += 1
-                    if count >= 20:
-                        break
+                if count >= 20:
+                    break
     except Exception as e:
         log.error(f'[{slug}] failed: {e}')
     log.info(f'[{slug}] {count} signals posted')
@@ -932,6 +979,7 @@ def scrape_utah_county_tax_delinquency_pdf():
     count = 0
     PDF_URL = ('https://www.utahcounty.gov/Dept/Treas/production-single-forms/'
                'delinquent-property-tax-report/UtahCounty_Delinquent_Property_Tax_report.pdf')
+    batch = []
     try:
         import io, pdfplumber
         r = SESSION.get(PDF_URL, timeout=30)
@@ -965,8 +1013,14 @@ def scrape_utah_county_tax_delinquency_pdf():
                     amount  = record.get('amount','') or record.get('tax due','') or ''
                     desc = f"{parcel} | {owner} | {address} | {amount}".strip(' | ')
                     if owner or parcel:
-                        if post_signal(slug, owner, address or parcel, PDF_URL, 75, 'Utah', 'tax_delinquency'):
-                            count += 1
+                        raw = f"{slug}|{PDF_URL}|{owner}|{address or parcel}"
+                        batch.append({
+                            'source_slug': slug, 'raw_address': (address or parcel)[:200],
+                            'raw_owner_name': (owner or '')[:200], 'raw_url': PDF_URL,
+                            'score': 75, 'county': 'Utah', 'signal_type': 'tax_delinquency',
+                            'dedupe_hash': hashlib.md5(raw.encode()).hexdigest(),
+                        })
+        count = post_signals_batch(batch)
     except Exception as e:
         log.error(f'[{slug}] failed: {e}')
     log.info(f'[{slug}] {count} signals posted')
