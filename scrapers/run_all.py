@@ -463,36 +463,105 @@ def scrape_fire_marshal_lp_gas():
 def scrape_fire_marshal_suppression():
     return scrape_fire_marshal('fire-marshal-suppression', 'fire-suppression', 'contractor_license')
 
-# ─── SLC ACCELA CITIZEN PORTAL (public search, no token) ────────────────────
+# ─── ACCELA API (OAuth Client Credentials — no user login needed) ────────────
+
+def accela_get_token(environment='PROD'):
+    """Get Accela API token using client credentials flow."""
+    client_id = os.environ.get('ACCELA_CLIENT_ID', '')
+    client_secret = os.environ.get('ACCELA_CLIENT_SECRET', '')
+    if not client_id or not client_secret:
+        log.warning('No ACCELA credentials in env')
+        return None
+    try:
+        r = SESSION.post(
+            'https://auth.accela.com/oauth2/token',
+            data={
+                'grant_type': 'client_credentials',
+                'client_id': client_id,
+                'client_secret': client_secret,
+                'scope': 'records',
+                'environment': environment,
+            },
+            timeout=20
+        )
+        if r.status_code == 200:
+            return r.json().get('access_token')
+        log.error(f'Accela token error: {r.status_code} {r.text[:200]}')
+    except Exception as e:
+        log.error(f'Accela token fetch failed: {e}')
+    return None
+
+def accela_search_records(token, agency, module, record_type=None, max_records=100):
+    """Search Accela permit records via v4 API."""
+    try:
+        params = {
+            'limit': min(max_records, 1000),
+            'offset': 0,
+            'fields': 'id,type,status,statusDate,openedDate,address',
+        }
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'x-accela-agency': agency,
+            'x-accela-environment': 'PROD',
+            'Accept': 'application/json',
+        }
+        body = {'type': {'module': module}}
+        if record_type:
+            body['type']['value'] = record_type
+
+        r = SESSION.post(
+            'https://apis.accela.com/v4/search/records',
+            json=body, headers=headers, params=params, timeout=30
+        )
+        if r.status_code == 200:
+            return r.json().get('result', [])
+        log.error(f'Accela search error {agency}/{module}: {r.status_code} {r.text[:200]}')
+    except Exception as e:
+        log.error(f'Accela search failed: {e}')
+    return []
+
+def _scrape_accela(slug, agency, module, county, signal_type, score):
+    """Generic Accela permit scraper using OAuth API."""
+    log.info(f'[{slug}] starting (Accela API — {agency}/{module})')
+    token = accela_get_token()
+    if not token:
+        log.warning(f'[{slug}] no token — falling back to Apify')
+        # Apify fallback
+        url = f'https://aca-prod.accela.com/{agency}/Cap/CapHome.aspx?module={module}&TabName=HOME'
+        lines = apify_text(url)
+        count = 0
+        kw = ['permit','building','construction','address','issued','application','approved']
+        for line in lines:
+            if any(w in line.lower() for w in kw) and any(c.isdigit() for c in line) and 10 < len(line) < 300:
+                if post_signal(slug, None, line[:200], url, score, county, signal_type):
+                    count += 1
+                if count >= 20: break
+        log.info(f'[{slug}] {count} signals (Apify fallback)')
+        return count
+
+    records = accela_search_records(token, agency, module, max_records=200)
+    count = 0
+    for rec in records:
+        addr = rec.get('address', {})
+        street = addr.get('streetAddress', '') or addr.get('streetName', '')
+        city = addr.get('city', '')
+        full_addr = f"{street}, {city}".strip(', ') if city else street
+        rec_id = rec.get('id', '')
+        status = rec.get('status', {}).get('value', '')
+        opened = rec.get('openedDate', '')
+        desc = f"{full_addr} | Status: {status} | Opened: {opened}".strip(' |')
+        if rec_id or full_addr:
+            url = f"https://aca-prod.accela.com/{agency}/Cap/Detail.aspx?altId={rec_id}"
+            if post_signal(slug, None, full_addr or desc, url, score, county, signal_type):
+                count += 1
+    log.info(f'[{slug}] {count} signals posted (Accela API)')
+    return count
 
 def scrape_slc_accela_building():
-    slug = 'slc-permits-accela-building'
-    log.info(f'[{slug}] starting')
-    # Public citizen portal — scrape via Apify
-    results = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Building&TabName=HOME')
-    count = 0
-    kw = ['permit','building','construction','address','issued','application','approved','residential','commercial']
-    for line in results:
-        if any(w in line.lower() for w in kw) and any(c.isdigit() for c in line) and 10 < len(line) < 300:
-            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Building', 50, 'Salt Lake', 'building_permit'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    return _scrape_accela('slc-permits-accela-building', 'SLCREF', 'Building', 'Salt Lake', 'building_permit', 50)
 
 def scrape_slc_accela_engineering():
-    slug = 'slc-permits-accela-engineering'
-    log.info(f'[{slug}] starting')
-    results = apify_text('https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Engineering&TabName=HOME')
-    count = 0
-    kw = ['permit','engineering','infrastructure','utility','excavation','grading','issued','application']
-    for line in results:
-        if any(w in line.lower() for w in kw) and 10 < len(line) < 300:
-            if post_signal(slug, None, line[:200], 'https://aca-prod.accela.com/SLCREF/Cap/CapHome.aspx?module=Engineering', 45, 'Salt Lake', 'engineering_permit'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    return _scrape_accela('slc-permits-accela-engineering', 'SLCREF', 'Engineering', 'Salt Lake', 'engineering_permit', 45)
 
 # ─── OREM BUILDING PERMITS (JS-rendered, use Apify) ─────────────────────────
 

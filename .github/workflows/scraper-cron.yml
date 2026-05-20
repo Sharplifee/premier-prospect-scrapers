@@ -14,6 +14,8 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+      ACCELA_CLIENT_ID: ${{ secrets.ACCELA_CLIENT_ID }}
+      ACCELA_CLIENT_SECRET: ${{ secrets.ACCELA_CLIENT_SECRET }}
 
     steps:
       - uses: actions/checkout@v4
