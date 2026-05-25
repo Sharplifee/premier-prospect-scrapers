@@ -1428,144 +1428,6 @@ def scrape_slc_county_public_surplus():
 
 
 
-SCRAPERS = [
-    # ── HIGH SIGNAL — distress & life events ──
-    scrape_obituaries_herald,
-    scrape_probate_court,
-    scrape_utah_county_tax_delinquency,
-    scrape_utah_county_nts,
-    scrape_slc_county_nts,
-    scrape_slc_tax_sale,
-    scrape_wasatch_tax_sale,
-    scrape_wasatch_county_nts,
-    # ── PROPERTY RECORDS ──
-    scrape_slc_assessor,
-    scrape_slc_real_estate,
-    scrape_slc_public_surplus,
-    scrape_wasatch_public_surplus,
-    scrape_slc_city_real_estate,
-    # ── PERMITS ──
-    scrape_south_slc_permits,
-    scrape_south_slc_permits_pdf,
-    scrape_utah_county_codev,
-    scrape_utah_county_codev_browser,
-    scrape_utah_county_directory,
-    scrape_utah_county_property_info,
-    scrape_utah_county_real_property,
-    scrape_utah_county_building_permit,
-    scrape_slc_accela_building,
-    scrape_slc_accela_engineering,
-    scrape_orem_building_permits,
-    # ── FSBO & DIRECTORIES ──
-    scrape_uvhba_directory,
-    scrape_ksl_fsbo,
-    # ── FIRE MARSHAL LICENSE ROLLS ──
-    scrape_fire_marshal_lp_hvac,
-    scrape_fire_marshal_lp_gas,
-    scrape_fire_marshal_suppression,
-    # ── LIR PARCEL DATA ──
-    scrape_uco_lir_parcels,
-    scrape_davis_lir_parcels,
-    scrape_slco_lir_parcels,
-    scrape_weber_lir_parcels,
-    # ── TIER 1 — PRIMARY TRIGGERS (new) ──
-    scrape_utah_county_nts_recorder,
-    scrape_slc_county_nts_recorder,
-    scrape_utah_county_tax_delinquency_pdf,
-    scrape_nod_tracker,
-    # ── TIER 2 — LIFE EVENTS (new) ──
-    scrape_probate_court_xchange,
-    scrape_divorce_court,
-    # ── TIER 3 — ACTIVE INTENT (new) ──
-    scrape_ksl_fsbo_craigslist,
-    # ── TIER 4 — ENRICHMENT (new) ──
-    scrape_deed_transfers_utah_county,
-    scrape_obituaries_enrichment,
-    # ── TIER 5 — BUYER SIDE (new) ──
-    scrape_utah_county_public_surplus,
-    scrape_slc_county_public_surplus,
-
-    # ══ BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC APIs ══
-    scrape_hmda_utah_county,
-    scrape_hmda_slc_county,
-    scrape_zillow_market_signals,
-    scrape_realtor_market_utah,
-
-    # ══ BUYER INTELLIGENCE — GENERATION 2: ACTIVE BUYER INTENT ══
-    scrape_craigslist_buyer_wanted_slc,
-    scrape_craigslist_buyer_wanted_provo,
-    scrape_reddit_buyer_intent,
-    scrape_utah_sos_new_entities,
-
-    # ══ BUYER INTELLIGENCE — GENERATION 3: COMPETITOR MIRROR & CROSS-SIDE ══
-    scrape_competitor_mirror_ksl,
-    scrape_competitor_mirror_redfin,
-    scrape_warn_act_utah,
-
-    # ══ BUYER INTELLIGENCE — ADDITIONAL LAYERS (v16) ══
-    scrape_marriage_records_slco,
-    scrape_linkedin_relocation_jobs,
-    scrape_census_new_construction_utah,
-    scrape_competitor_buyer_forms,
-    scrape_school_district_enrollment,
-    scrape_psychographic_buyer_scoring,
-
-    # ══ v17 — 6 FREE SOURCE ADDITIONS ══
-    scrape_lien_judgment_records,
-    scrape_census_acs_demographics,
-    scrape_zillow_home_values,
-    scrape_comparable_sales_slco,
-    scrape_utah_voter_growth,
-]
-
-if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v10 — {len(SCRAPERS)} sources ===')
-    total = 0
-    for fn in SCRAPERS:
-        try:
-            n = fn() or 0
-            total += n
-            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
-        except Exception as e:
-            log.error(f'{fn.__name__} crashed: {e}')
-            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
-    # Run convergence engine after all scrapers complete
-    try:
-        conv = run_convergence()
-        total += conv
-    except Exception as e:
-        log.error(f'convergence crashed: {e}')
-    log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
-
-
-
-if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v10 — {len(SCRAPERS)} sources ===')
-    total = 0
-    for fn in SCRAPERS:
-        try:
-            n = fn() or 0
-            total += n
-            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
-        except Exception as e:
-            log.error(f'{fn.__name__} crashed: {e}')
-            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
-    # Run convergence engine after all scrapers complete
-    try:
-        conv = run_convergence()
-        total += conv
-    except Exception as e:
-        log.error(f'convergence crashed: {e}')
-    log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
-
-
-
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC DATA APIS
-# ═══════════════════════════════════════════════════════════════════════════
-
 def scrape_hmda_utah_county():
     """
     HMDA Federal Mortgage Applications — Utah County (FIPS 49049).
@@ -2905,3 +2767,141 @@ def scrape_utah_voter_growth():
     log.info(f'[{slug}] {count} signals posted')
     return count
 
+
+SCRAPERS = [
+    # ── HIGH SIGNAL — distress & life events ──
+    scrape_obituaries_herald,
+    scrape_probate_court,
+    scrape_utah_county_tax_delinquency,
+    scrape_utah_county_nts,
+    scrape_slc_county_nts,
+    scrape_slc_tax_sale,
+    scrape_wasatch_tax_sale,
+    scrape_wasatch_county_nts,
+    # ── PROPERTY RECORDS ──
+    scrape_slc_assessor,
+    scrape_slc_real_estate,
+    scrape_slc_public_surplus,
+    scrape_wasatch_public_surplus,
+    scrape_slc_city_real_estate,
+    # ── PERMITS ──
+    scrape_south_slc_permits,
+    scrape_south_slc_permits_pdf,
+    scrape_utah_county_codev,
+    scrape_utah_county_codev_browser,
+    scrape_utah_county_directory,
+    scrape_utah_county_property_info,
+    scrape_utah_county_real_property,
+    scrape_utah_county_building_permit,
+    scrape_slc_accela_building,
+    scrape_slc_accela_engineering,
+    scrape_orem_building_permits,
+    # ── FSBO & DIRECTORIES ──
+    scrape_uvhba_directory,
+    scrape_ksl_fsbo,
+    # ── FIRE MARSHAL LICENSE ROLLS ──
+    scrape_fire_marshal_lp_hvac,
+    scrape_fire_marshal_lp_gas,
+    scrape_fire_marshal_suppression,
+    # ── LIR PARCEL DATA ──
+    scrape_uco_lir_parcels,
+    scrape_davis_lir_parcels,
+    scrape_slco_lir_parcels,
+    scrape_weber_lir_parcels,
+    # ── TIER 1 — PRIMARY TRIGGERS (new) ──
+    scrape_utah_county_nts_recorder,
+    scrape_slc_county_nts_recorder,
+    scrape_utah_county_tax_delinquency_pdf,
+    scrape_nod_tracker,
+    # ── TIER 2 — LIFE EVENTS (new) ──
+    scrape_probate_court_xchange,
+    scrape_divorce_court,
+    # ── TIER 3 — ACTIVE INTENT (new) ──
+    scrape_ksl_fsbo_craigslist,
+    # ── TIER 4 — ENRICHMENT (new) ──
+    scrape_deed_transfers_utah_county,
+    scrape_obituaries_enrichment,
+    # ── TIER 5 — BUYER SIDE (new) ──
+    scrape_utah_county_public_surplus,
+    scrape_slc_county_public_surplus,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC APIs ══
+    scrape_hmda_utah_county,
+    scrape_hmda_slc_county,
+    scrape_zillow_market_signals,
+    scrape_realtor_market_utah,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 2: ACTIVE BUYER INTENT ══
+    scrape_craigslist_buyer_wanted_slc,
+    scrape_craigslist_buyer_wanted_provo,
+    scrape_reddit_buyer_intent,
+    scrape_utah_sos_new_entities,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 3: COMPETITOR MIRROR & CROSS-SIDE ══
+    scrape_competitor_mirror_ksl,
+    scrape_competitor_mirror_redfin,
+    scrape_warn_act_utah,
+
+    # ══ BUYER INTELLIGENCE — ADDITIONAL LAYERS (v16) ══
+    scrape_marriage_records_slco,
+    scrape_linkedin_relocation_jobs,
+    scrape_census_new_construction_utah,
+    scrape_competitor_buyer_forms,
+    scrape_school_district_enrollment,
+    scrape_psychographic_buyer_scoring,
+
+    # ══ v17 — 6 FREE SOURCE ADDITIONS ══
+    scrape_lien_judgment_records,
+    scrape_census_acs_demographics,
+    scrape_zillow_home_values,
+    scrape_comparable_sales_slco,
+    scrape_utah_voter_growth,
+]
+
+if __name__ == '__main__':
+    log.info(f'=== Premier Prospect v10 — {len(SCRAPERS)} sources ===')
+    total = 0
+    for fn in SCRAPERS:
+        try:
+            n = fn() or 0
+            total += n
+            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
+        except Exception as e:
+            log.error(f'{fn.__name__} crashed: {e}')
+            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
+    # Run convergence engine after all scrapers complete
+    try:
+        conv = run_convergence()
+        total += conv
+    except Exception as e:
+        log.error(f'convergence crashed: {e}')
+    log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
+
+
+
+if __name__ == '__main__':
+    log.info(f'=== Premier Prospect v10 — {len(SCRAPERS)} sources ===')
+    total = 0
+    for fn in SCRAPERS:
+        try:
+            n = fn() or 0
+            total += n
+            write_run_log(fn.__name__.replace('scrape_',''), n, 'success')
+        except Exception as e:
+            log.error(f'{fn.__name__} crashed: {e}')
+            write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
+    # Run convergence engine after all scrapers complete
+    try:
+        conv = run_convergence()
+        total += conv
+    except Exception as e:
+        log.error(f'convergence crashed: {e}')
+    log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
+
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC DATA APIS
+# ═══════════════════════════════════════════════════════════════════════════
