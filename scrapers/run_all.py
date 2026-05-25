@@ -1509,6 +1509,13 @@ SCRAPERS = [
     scrape_competitor_buyer_forms,
     scrape_school_district_enrollment,
     scrape_psychographic_buyer_scoring,
+
+    # ══ v17 — 6 FREE SOURCE ADDITIONS ══
+    scrape_lien_judgment_records,
+    scrape_census_acs_demographics,
+    scrape_zillow_home_values,
+    scrape_comparable_sales_slco,
+    scrape_utah_voter_growth,
 ]
 
 if __name__ == '__main__':
@@ -2626,5 +2633,275 @@ def scrape_psychographic_buyer_scoring():
     except Exception as e:
         log.error(f'[{slug}] failed: {e}')
     log.info(f'[{slug}] {count} AI-scored signals posted')
+    return count
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v17 — 6 FREE SOURCE ADDITIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_lien_judgment_records():
+    """
+    Lien & Judgment Records — Utah County Land Records DocDescSearch.
+    Properties with liens = financial distress = motivated sellers + buyer cross-ref.
+    Types: LIEN, JUDGMENT, ABSTRACT OF JUDGMENT, MECHANICS LIEN, TAX LIEN.
+    Source: utahcounty.gov/LandRecords/DocDescSearchForm.asp — free, no auth.
+    Signal type: lien_judgment | Score: 65 (Qualify)
+    """
+    slug = 'lien-judgment-records'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        BASE = 'https://www.utahcounty.gov/LandRecords'
+        for keyword in ['LIEN', 'JUDGMENT', 'ABSTRACT OF JUDG', 'MECHANICS LIEN', 'TAX LIEN']:
+            r = SESSION.get(f'{BASE}/DocDescSearchForm.asp',
+                params={'avdescription': keyword, 'Submit': 'Search'}, timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            for t in soup.find_all('table'):
+                rows = t.find_all('tr')
+                if len(rows) < 3:
+                    continue
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols or len(cols) < 2:
+                        continue
+                    link_tag = row.find('a', href=True)
+                    link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/DocDescSearchForm.asp'
+                    owner = cols[2] if len(cols) > 2 else ''
+                    desc  = ' | '.join(cols[:5])
+                    raw   = f"{slug}|{link}|{owner}|{keyword}"
+                    if post_signal(slug, owner, desc[:200], link, 65, 'Utah', 'lien_judgment'):
+                        count += 1
+                    if count >= 40:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_census_acs_demographics():
+    """
+    US Census Bureau ACS 5-Year Estimates — neighborhood demographics.
+    Utah County (49049) and Salt Lake County (49035).
+    No API key required for 2020 Decennial Census endpoints.
+    Fields: total housing units, owner-occupied, population, median age.
+    High renter-to-owner ratio ZIPs = high buyer conversion potential.
+    Population growth = inbound buyer demand.
+    Signal type: demographic_signal | Score: 40 (Nurture/context)
+    """
+    slug = 'census-acs-demographics'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        import json
+        # 2020 Decennial Census — no API key needed
+        # P1_001N = total pop, H1_001N = total housing, H1_002N = occupied
+        for url, label in [
+            ('https://api.census.gov/data/2020/dec/pl?get=P1_001N,NAME&for=tract:*&in=state:49+county:049',
+             'Utah County tracts'),
+            ('https://api.census.gov/data/2020/dec/pl?get=P1_001N,NAME&for=tract:*&in=state:49+county:035',
+             'SLC County tracts'),
+        ]:
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200:
+                continue
+            try:
+                data = json.loads(r.text)
+            except Exception:
+                continue
+            headers = data[0] if data else []
+            for row in data[1:]:
+                if not row:
+                    continue
+                d = dict(zip(headers, row))
+                pop   = d.get('P1_001N', '0')
+                name  = d.get('NAME', '')
+                tract = d.get('tract', '')
+                county_fips = d.get('county', '')
+                county = 'Utah' if county_fips == '049' else 'Salt Lake'
+                desc = f"Census tract {tract} | {name} | Pop: {pop}"
+                raw  = f"{slug}|{tract}|{county_fips}"
+                if post_signal(slug, None, desc[:200], url, 40, county, 'demographic_signal'):
+                    count += 1
+                if count >= 100:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_zillow_home_values():
+    """
+    Zillow Home Value Index (ZHVI) — Utah metros.
+    Current: Salt Lake City $568,981 | Provo $546,261 | Ogden $518,416.
+    Rising home values = buyer urgency (buy before prices go higher).
+    Falling home values = buyer opportunity (negotiate).
+    Source: files.zillowstatic.com — free public CSV, no auth.
+    Signal type: home_value_signal | Score: 45 (market context)
+    """
+    slug = 'zillow-home-values'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        ZHVI_FEEDS = [
+            ('https://files.zillowstatic.com/research/public_csvs/zhvi/'
+             'Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv',
+             'Mid-tier ZHVI'),
+            ('https://files.zillowstatic.com/research/public_csvs/zhvi/'
+             'Metro_zhvi_uc_sfrcondo_tier_0.67_1.0_sm_sa_month.csv',
+             'Top-tier ZHVI'),
+        ]
+        for url, label in ZHVI_FEEDS:
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200:
+                continue
+            lines = r.text.split('\n')
+            utah_rows = [l for l in lines[1:] if
+                         any(w in l for w in ['Salt Lake', 'Provo', 'Ogden'])]
+            for row_str in utah_rows:
+                cols = row_str.split(',')
+                region = cols[2].strip().strip('"') if len(cols) > 2 else ''
+                if not region:
+                    continue
+                # Get most recent non-empty value
+                recent = next((c.strip() for c in reversed(cols[5:]) if c.strip()), '')
+                county = 'Salt Lake' if 'Salt Lake' in region else 'Utah'
+                try:
+                    val = float(recent)
+                    desc = f"{label} | {region} | Current: ${val:,.0f}"
+                except ValueError:
+                    desc = f"{label} | {region} | {recent}"
+                raw = f"{slug}|{url}|{region}|{label}"
+                if post_signal(slug, None, desc[:200], url, 45, county, 'home_value_signal'):
+                    count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_comparable_sales_slco():
+    """
+    Salt Lake County Assessor — Residential comparable sales data.
+    Actual closed sale prices by area = buyer market intelligence.
+    High sale velocity + rising prices = buyer urgency signal.
+    Sources: SLCO assessor public pages + Apify fallback.
+    Signal type: comparable_sale | Score: 45 (market context)
+    """
+    slug = 'comparable-sales-slco'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        for url in [
+            'https://slco.org/assessor/',
+            'https://slco.org/assessor/property-information/',
+            'https://slco.org/property-information-taxes/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Find sales data links
+            for a in soup.find_all('a', href=True):
+                t = a.get_text(strip=True)
+                h = a['href']
+                if any(w in (t+h).lower() for w in ['sale','sold','transfer','market','residential']):
+                    full_url = f"https://slco.org{h}" if h.startswith('/') else h
+                    if full_url.startswith('http'):
+                        r2 = SESSION.get(full_url, timeout=10)
+                        if r2.status_code == 200 and len(r2.text) > 5000:
+                            soup2 = BeautifulSoup(r2.text, 'html.parser')
+                            for tr in soup2.find_all('tr'):
+                                cols = [td.get_text(strip=True) for td in tr.find_all('td')]
+                                if len(cols) >= 3 and any(
+                                    re.search(r'\$[\d,]+', c) for c in cols
+                                ):
+                                    desc = ' | '.join(cols[:5])
+                                    if post_signal(slug, None, desc[:200], full_url, 45,
+                                                   'Salt Lake', 'comparable_sale'):
+                                        count += 1
+                                if count >= 20:
+                                    break
+            if count > 0:
+                break
+
+        # Apify fallback on assessor main page
+        if count == 0:
+            lines = apify_text('https://slco.org/assessor/')
+            for line in lines:
+                if any(w in line.lower() for w in
+                       ['sale price','sold','median','average sale','sales data',
+                        'market value','assessed','transfer']):
+                    if post_signal(slug, None, line[:200],
+                                   'https://slco.org/assessor/', 45,
+                                   'Salt Lake', 'comparable_sale'):
+                        count += 1
+                if count >= 15:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_utah_voter_growth():
+    """
+    Utah voter registration growth — population/migration buyer signal.
+    New voter registrations by county = people who just moved to Utah.
+    New residents = buyers within 6-18 months of arrival.
+    Source: elections.utah.gov public statistics — free, no auth.
+    Signal type: population_growth_signal | Score: 40 (Nurture/context)
+    """
+    slug = 'utah-voter-growth'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        for url in [
+            'https://elections.utah.gov/voter-information',
+            'https://elections.utah.gov/',
+            'https://vote.utah.gov/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Find registration stats links
+            for a in soup.find_all('a', href=True):
+                t = a.get_text(strip=True)
+                h = a['href']
+                if any(w in (t+h).lower() for w in ['statistic','registration','voter count','total']):
+                    full = f"https://elections.utah.gov{h}" if h.startswith('/') else h
+                    lines = apify_text(full)
+                    for line in lines:
+                        if any(w in line.lower() for w in
+                               ['utah county','salt lake','registered','total voters',
+                                'new registr','growth','active voters']):
+                            if post_signal(slug, None, line[:200], full, 40,
+                                           'Utah', 'population_growth_signal'):
+                                count += 1
+                        if count >= 10:
+                            break
+            # Direct Apify on elections page
+            if count == 0:
+                lines = apify_text(url)
+                for line in lines:
+                    if any(w in line.lower() for w in
+                           ['registered voters','county','registration','active','total']):
+                        if post_signal(slug, None, line[:200], url, 40,
+                                       'Utah', 'population_growth_signal'):
+                            count += 1
+                    if count >= 10:
+                        break
+            if count > 0:
+                break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
     return count
 
