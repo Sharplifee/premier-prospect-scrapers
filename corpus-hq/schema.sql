@@ -136,3 +136,47 @@ CREATE TABLE IF NOT EXISTS youtube_urls (id text, title text, url text, date dat
 
 -- CLIFF OUTBOUND PENDING (view)
 CREATE TABLE IF NOT EXISTS cliff_outbound_pending (id bigint, event_type text, entity_id text, entity_name text, event_payload jsonb, detected_at timestamp with time zone);
+
+-- ============================================================
+-- SEARCH INFRASTRUCTURE — UPGRADED 2026-05-25
+-- ============================================================
+-- Trigger: master_corpus_search_doc_trigger (INSERT + UPDATE)
+-- Function: master_corpus_search_doc_fn()
+-- Weights:
+--   A = title
+--   B = tags, type, collection
+--   C = summary (up to 100k chars)
+--   D = transcript (up to 500k chars)
+-- All 21,502 rows reindexed on 2026-05-25.
+-- Trigger auto-maintains on every insert/update going forward.
+
+-- ============================================================
+-- KNOWN DATA GAPS — corpus_maintenance_log issue_type=MISSING_TRANSCRIPT
+-- ============================================================
+-- 219 entries flagged with empty transcript but transcript-bearing type:
+--   Personal Voice Memo: 140 entries — need audio re-transcription
+--   YouTube:              42 entries — all titled "Untitled", need re-ingest
+--   Meeting Recording:    19 entries — need source audio re-transcription
+--   Podcast / Lecture:    18 entries — need re-ingest
+-- These are NOT search failures. Search is correct.
+-- These entries genuinely have no transcript loaded yet.
+-- Resolution: re-ingest via Whisper or Supadata for YouTube.
+
+-- ============================================================
+-- CHANNEL BRAIN STATUS — 2026-05-25
+-- ============================================================
+-- Tables: cb_channels, cb_videos, cb_chunks — all 0 rows
+-- Source data: youtube_urls table has 5,521 videos across 48 collections
+-- Ready for ingest. Edge functions cb-ingest and cb-query deployed.
+-- Keys: YouTube Data API (3 keys), Supadata API key available.
+-- Collections to ingest (top by volume):
+--   Processing...             1155 videos
+--   Full Interviews of Impact Theory  519
+--   Jefferson Fisher          498
+--   Chase Hughes              493
+--   Iman Gadzhi               459
+--   Surviving Narcissism      407
+--   Shawn Ryan Show           327
+--   ... 41 more collections
+-- ============================================================
+
