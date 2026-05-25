@@ -1,4 +1,28 @@
 -- ============================================================
+-- CORPUS HQ — MANDATORY READ PROTOCOL
+-- ============================================================
+-- SURFACE SCAN IS FORBIDDEN.
+-- Every query touching master_corpus for content analysis
+-- MUST include the transcript column.
+--
+-- summary = "Imported from NoteX" does NOT mean empty.
+-- It means the real content is in transcript. Always read it.
+--
+-- Types that ALWAYS have content in transcript:
+-- voice_memo, voice_note, Voice Note, audio, Meeting Recording,
+-- NoteX, transcript, claude_conversation, gpt_conversation,
+-- youtube_video, podcast
+--
+-- CORRECT pattern:
+-- SELECT title, transcript, summary, type, tags, date
+-- FROM master_corpus
+-- WHERE transcript IS NOT NULL AND transcript != ''
+--
+-- WRONG pattern (FORBIDDEN):
+-- SELECT title, summary FROM master_corpus
+-- ============================================================
+
+-- ============================================================
 -- CORPUS HQ — CANONICAL SCHEMA
 -- Supabase Project: lbvaosyfikkpvcwksiph
 -- Last locked: 2026-05-25
@@ -112,4 +136,3 @@ CREATE TABLE IF NOT EXISTS youtube_urls (id text, title text, url text, date dat
 
 -- CLIFF OUTBOUND PENDING (view)
 CREATE TABLE IF NOT EXISTS cliff_outbound_pending (id bigint, event_type text, entity_id text, entity_name text, event_payload jsonb, detected_at timestamp with time zone);
-
