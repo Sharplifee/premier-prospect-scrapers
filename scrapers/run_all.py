@@ -1484,6 +1484,23 @@ SCRAPERS = [
     # ── TIER 5 — BUYER SIDE (new) ──
     scrape_utah_county_public_surplus,
     scrape_slc_county_public_surplus,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC APIs ══
+    scrape_hmda_utah_county,
+    scrape_hmda_slc_county,
+    scrape_zillow_market_signals,
+    scrape_realtor_market_utah,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 2: ACTIVE BUYER INTENT ══
+    scrape_craigslist_buyer_wanted_slc,
+    scrape_craigslist_buyer_wanted_provo,
+    scrape_reddit_buyer_intent,
+    scrape_utah_sos_new_entities,
+
+    # ══ BUYER INTELLIGENCE — GENERATION 3: COMPETITOR MIRROR & CROSS-SIDE ══
+    scrape_competitor_mirror_ksl,
+    scrape_competitor_mirror_redfin,
+    scrape_warn_act_utah,
 ]
 
 if __name__ == '__main__':
@@ -1527,4 +1544,597 @@ if __name__ == '__main__':
     log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
 
 
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUYER INTELLIGENCE — GENERATION 1: FEDERAL & PUBLIC DATA APIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_hmda_utah_county():
+    """
+    HMDA Federal Mortgage Applications — Utah County (FIPS 49049).
+    Home Mortgage Disclosure Act public data from CFPB.
+    Every purchase loan application in Utah County = confirmed active buyer.
+    Fields: loan_amount, property_value, income, loan_type, applicant_age, census_tract.
+    Signal type: mortgage_application | Score: 70 (Qualify)
+    Source: ffiec.cfpb.gov — free, federal, no auth required.
+    """
+    slug = 'hmda-utah-county'
+    log.info(f'[{slug}] starting')
+    count = 0
+    batch = []
+    try:
+        import csv, io
+        # action_taken=1 = loan originated (actual purchase, not just application)
+        # action_taken=8 = pre-approval request = also strong buyer signal
+        for action in ['1', '8']:
+            url = (f'https://ffiec.cfpb.gov/v2/data-browser-api/view/csv'
+                   f'?states=UT&years=2023&actions_taken={action}&counties=49049')
+            r = SESSION.get(url, timeout=30)
+            if r.status_code != 200:
+                continue
+            reader = csv.reader(io.StringIO(r.text))
+            rows = list(reader)
+            if not rows:
+                continue
+            hdrs = rows[0]
+            for row in rows[1:]:
+                if not row:
+                    continue
+                d = dict(zip(hdrs, row))
+                loan_amt    = d.get('loan_amount', '')
+                prop_val    = d.get('property_value', '')
+                loan_type   = d.get('derived_loan_product_type', '')
+                dwelling    = d.get('derived_dwelling_category', '')
+                tract       = d.get('census_tract', '')
+                age         = d.get('applicant_age', '')
+                income      = d.get('income', '')
+                # Filter: single-family purchase only
+                if 'Single Family' not in dwelling and 'Manufactured' not in dwelling:
+                    continue
+                desc = (f"Mortgage application | Loan: ${loan_amt} | "
+                        f"Property: ${prop_val} | Type: {loan_type} | "
+                        f"Age: {age} | Income: ${income}k | Tract: {tract}")
+                raw = f"{slug}|{url}|{tract}|{loan_amt}|{loan_type}"
+                batch.append({
+                    'source_slug': slug,
+                    'raw_address': tract[:200],
+                    'raw_owner_name': f"Applicant Age {age}"[:200],
+                    'raw_url': url[:500],
+                    'score': 70,
+                    'county': 'Utah',
+                    'signal_type': 'mortgage_application',
+                    'dedupe_hash': hashlib.md5(raw.encode()).hexdigest(),
+                })
+                if len(batch) >= 500:
+                    count += post_signals_batch(batch)
+                    batch = []
+        if batch:
+            count += post_signals_batch(batch)
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_hmda_slc_county():
+    """
+    HMDA Federal Mortgage Applications — Salt Lake County (FIPS 49035).
+    Same as Utah County scraper, different FIPS code.
+    Signal type: mortgage_application | Score: 70
+    """
+    slug = 'hmda-slc-county'
+    log.info(f'[{slug}] starting')
+    count = 0
+    batch = []
+    try:
+        import csv, io
+        for action in ['1', '8']:
+            url = (f'https://ffiec.cfpb.gov/v2/data-browser-api/view/csv'
+                   f'?states=UT&years=2023&actions_taken={action}&counties=49035')
+            r = SESSION.get(url, timeout=30)
+            if r.status_code != 200:
+                continue
+            reader = csv.reader(io.StringIO(r.text))
+            rows = list(reader)
+            if not rows:
+                continue
+            hdrs = rows[0]
+            for row in rows[1:]:
+                if not row:
+                    continue
+                d = dict(zip(hdrs, row))
+                dwelling = d.get('derived_dwelling_category', '')
+                if 'Single Family' not in dwelling and 'Manufactured' not in dwelling:
+                    continue
+                loan_amt  = d.get('loan_amount', '')
+                prop_val  = d.get('property_value', '')
+                loan_type = d.get('derived_loan_product_type', '')
+                tract     = d.get('census_tract', '')
+                age       = d.get('applicant_age', '')
+                income    = d.get('income', '')
+                raw = f"{slug}|{url}|{tract}|{loan_amt}|{loan_type}"
+                batch.append({
+                    'source_slug': slug,
+                    'raw_address': tract[:200],
+                    'raw_owner_name': f"Applicant Age {age}"[:200],
+                    'raw_url': url[:500],
+                    'score': 70,
+                    'county': 'Salt Lake',
+                    'signal_type': 'mortgage_application',
+                    'dedupe_hash': hashlib.md5(raw.encode()).hexdigest(),
+                })
+                if len(batch) >= 500:
+                    count += post_signals_batch(batch)
+                    batch = []
+        if batch:
+            count += post_signals_batch(batch)
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_zillow_market_signals():
+    """
+    Zillow Public Research CSV — Market temperature, inventory, price cuts, new listings.
+    No auth. Direct download from Zillow's public research files.
+    Rising market temp + dropping inventory = buyer urgency signal.
+    Extracts Utah County (Provo MSA) and Salt Lake County (SLC MSA) rows.
+    Signal type: market_demand | Score: 55
+    """
+    slug = 'zillow-market-signals'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        ZILLOW_FEEDS = [
+            ('https://files.zillowstatic.com/research/public_csvs/market_temp_index/Metro_market_temp_index_uc_sfrcondo_month.csv', 'market_temp', 55),
+            ('https://files.zillowstatic.com/research/public_csvs/invt_fs/Metro_invt_fs_uc_sfrcondo_sm_month.csv', 'inventory_signal', 45),
+            ('https://files.zillowstatic.com/research/public_csvs/perc_listings_price_cut/Metro_perc_listings_price_cut_uc_sfrcondo_sm_month.csv', 'price_cut_signal', 50),
+            ('https://files.zillowstatic.com/research/public_csvs/new_listings/Metro_new_listings_uc_sfrcondo_sm_week.csv', 'new_listings_signal', 45),
+        ]
+        for url, signal_type, score in ZILLOW_FEEDS:
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200:
+                continue
+            lines = r.text.split('\n')
+            header = lines[0].split(',') if lines else []
+            utah_rows = [l for l in lines[1:] if 'Salt Lake' in l or 'Provo' in l or 'Ogden' in l]
+            for row_str in utah_rows:
+                cols = row_str.split(',')
+                if len(cols) < 4:
+                    continue
+                region = cols[2].strip().strip('"') if len(cols) > 2 else ''
+                # Get most recent value (last non-empty column)
+                recent_vals = [c for c in reversed(cols[5:]) if c.strip() and c.strip() != '']
+                recent = recent_vals[0].strip() if recent_vals else ''
+                county = 'Salt Lake' if 'Salt Lake' in region else 'Utah'
+                desc = f"{region} | {signal_type} | Latest: {recent} | Source: Zillow Research"
+                raw = f"{slug}|{url}|{region}|{signal_type}"
+                if post_signal(slug, None, desc[:200], url, score, county, signal_type):
+                    count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_realtor_market_utah():
+    """
+    Realtor.com Public Inventory Data — Utah MSAs.
+    Public S3 CSV — no auth. 109,152 rows total, 474 Utah matches.
+    Fields: median_listing_price, active_listing_count, median_days_on_market,
+            new_listing_count, price_reduced_count.
+    Signal type: market_inventory | Score: 45
+    """
+    slug = 'realtor-market-utah'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        import csv, io
+        url = 'https://econdata.s3-us-west-2.amazonaws.com/Reports/Core/RDC_Inventory_Core_Metrics_Metro_History.csv'
+        r = SESSION.get(url, timeout=30)
+        if r.status_code != 200:
+            log.warning(f'[{slug}] HTTP {r.status_code}')
+            return 0
+        reader = csv.reader(io.StringIO(r.text))
+        rows = list(reader)
+        hdrs = rows[0] if rows else []
+        for row in rows[1:]:
+            if not row:
+                continue
+            d = dict(zip(hdrs, row))
+            cbsa = d.get('cbsa_title', '')
+            if not any(w in cbsa for w in ['Salt Lake', 'Provo', 'Ogden', 'Logan']):
+                continue
+            # Only most recent entries (last 12 months)
+            month = d.get('month_date_yyyymm', '')
+            if month and int(month[:4]) < 2024:
+                continue
+            price    = d.get('median_listing_price', '')
+            active   = d.get('active_listing_count', '')
+            dom      = d.get('median_days_on_market', '')
+            new_list = d.get('new_listing_count', '')
+            price_red= d.get('price_reduced_count', '')
+            county   = 'Salt Lake' if 'Salt Lake' in cbsa else 'Utah'
+            desc = (f"{cbsa} | {month} | Median: ${price} | "
+                    f"Active: {active} | DOM: {dom} | New: {new_list} | Price cuts: {price_red}")
+            raw = f"{slug}|{url}|{cbsa}|{month}"
+            if post_signal(slug, None, desc[:200], url, 45, county, 'market_inventory'):
+                count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUYER INTELLIGENCE — GENERATION 2: ACTIVE BUYER INTENT (SOCIAL/PUBLIC)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_craigslist_buyer_wanted_slc():
+    """
+    Craigslist Housing Wanted — Salt Lake City.
+    Real people posting explicit housing want ads.
+    Filters for buy-intent keywords: looking to buy, purchase, need home, etc.
+    Also captures relocation posts. Gen2: BS4 direct parse, no Apify needed.
+    Signal type: buyer_wanted_post | Score: 65
+    """
+    slug = 'craigslist-buyer-wanted-slc'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        BUY_KEYWORDS = [
+            'want to buy', 'looking to buy', 'looking to purchase', 'want to purchase',
+            'need to buy', 'trying to buy', 'first home', 'first house', 'pre-approv',
+            'pre approved', 'approved for', 'cash buyer', 'cash purchase',
+            'relocating', 'relocation', 'moving to utah', 'moving to salt lake',
+            'moving to slc', 'transferring', 'need a home', 'need a house',
+            'house hunt', 'home search', 'searching for a home', 'searching for a house',
+        ]
+        for search_q in ['want to buy', 'looking to buy', 'relocating', 'pre-approved']:
+            url = f'https://saltlake.craigslist.org/search/hhh?sort=date&query={search_q.replace(" ","+")}'
+            r = SESSION.get(url, timeout=15)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            items = soup.select('li.cl-static-search-result, li[data-pid], .result-row')
+            for item in items:
+                title_el = item.select_one('a, .result-title, .posting-title')
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True).lower()
+                if not any(kw in title for kw in BUY_KEYWORDS):
+                    continue
+                link_el = item.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'):
+                    link = 'https://saltlake.craigslist.org' + link
+                price_el = item.select_one('.priceinfo, .result-price')
+                price = price_el.get_text(strip=True) if price_el else ''
+                desc = f"{title_el.get_text(strip=True)} {price}".strip()[:200]
+                raw = f"{slug}|{link}|{desc}"
+                if post_signal(slug, None, desc, link, 65, 'Salt Lake', 'buyer_wanted_post'):
+                    count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_craigslist_buyer_wanted_provo():
+    """
+    Craigslist Housing Wanted — Provo/Utah County.
+    Same as SLC but targeting Provo + Utah County area posts.
+    Signal type: buyer_wanted_post | Score: 65
+    """
+    slug = 'craigslist-buyer-wanted-provo'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        BUY_KEYWORDS = [
+            'want to buy', 'looking to buy', 'looking to purchase', 'want to purchase',
+            'need to buy', 'first home', 'first house', 'pre-approv', 'pre approved',
+            'cash buyer', 'relocating', 'relocation', 'moving to utah', 'moving to provo',
+            'moving to orem', 'house hunt', 'home search', 'need a home',
+        ]
+        for search_q in ['want to buy', 'looking to buy', 'relocating', 'pre-approved']:
+            url = f'https://provo.craigslist.org/search/hhh?sort=date&query={search_q.replace(" ","+")}'
+            r = SESSION.get(url, timeout=15)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            items = soup.select('li.cl-static-search-result, li[data-pid], .result-row')
+            for item in items:
+                title_el = item.select_one('a, .result-title, .posting-title')
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True).lower()
+                if not any(kw in title for kw in BUY_KEYWORDS):
+                    continue
+                link_el = item.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'):
+                    link = 'https://provo.craigslist.org' + link
+                desc = title_el.get_text(strip=True)[:200]
+                if post_signal(slug, None, desc, link, 65, 'Utah', 'buyer_wanted_post'):
+                    count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_reddit_buyer_intent():
+    """
+    Reddit buyer intent posts — r/utahhousing, r/SaltLakeCity, r/provo.
+    Uses Apify Playwright (firefox) to bypass Reddit's bot detection.
+    Filters for explicit buy-intent language.
+    Signal type: social_buyer_intent | Score: 60
+    """
+    slug = 'reddit-buyer-intent'
+    log.info(f'[{slug}] starting')
+    count = 0
+    BUY_KEYWORDS = [
+        'looking to buy', 'want to buy', 'first home', 'first house',
+        'pre-approv', 'pre approved', 'house hunting', 'home search',
+        'relocating to utah', 'moving to utah', 'moving to slc',
+        'need to find a home', 'searching for a home', 'cash buyer',
+        'purchase a home', 'buy a house', 'afford', 'mortgage',
+        'down payment', 'fha', 'conventional loan',
+    ]
+    try:
+        for subreddit, county in [
+            ('utahhousing', 'Utah'),
+            ('SaltLakeCity', 'Salt Lake'),
+            ('provo', 'Utah'),
+            ('Utah', 'Utah'),
+        ]:
+            url = f'https://www.reddit.com/r/{subreddit}/new/'
+            lines = apify_text(url)
+            for line in lines:
+                line_lower = line.lower()
+                if any(kw in line_lower for kw in BUY_KEYWORDS) and 20 < len(line) < 400:
+                    desc = line[:200]
+                    src_url = f'https://www.reddit.com/r/{subreddit}/'
+                    if post_signal(slug, None, desc, src_url, 60, county, 'social_buyer_intent'):
+                        count += 1
+                    if count >= 30:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_utah_sos_new_entities():
+    """
+    Utah Secretary of State — New Real Estate Entity Formations.
+    Investors and buyers forming LLCs before property purchase.
+    Entities with 'properties', 'holdings', 'realty', 'investments',
+    'rental', 'assets', 'real estate' in name = active buyer signal.
+    Signal type: investor_buyer_entity | Score: 50
+    """
+    slug = 'utah-sos-new-entities'
+    log.info(f'[{slug}] starting')
+    count = 0
+    RE_KEYWORDS = [
+        'properties', 'property', 'holdings', 'realty', 'real estate',
+        'investments', 'investment', 'rental', 'rentals', 'assets',
+        'acquisitions', 'capital', 'group', 'ventures', 'land',
+        'homes', 'housing', 'estate', 'equity', 'management',
+    ]
+    try:
+        from bs4 import BeautifulSoup
+        url = 'https://secure.utah.gov/bes/index.html'
+        lines = apify_text(url)
+        for line in lines:
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in RE_KEYWORDS) and 5 < len(line) < 200:
+                if post_signal(slug, None, line[:200], url, 50, 'Utah', 'investor_buyer_entity'):
+                    count += 1
+            if count >= 25:
+                break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUYER INTELLIGENCE — GENERATION 3: COMPETITOR MIRROR & CROSS-SIDE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_competitor_mirror_ksl():
+    """
+    KSL Homes — Active listing feed cross-referenced against seller distress DB.
+    Any property appearing BOTH on KSL AND in pp_scraper_signals as distress
+    = cross-side convergence (seller listing + distress signal = maximum urgency).
+    Also captures price-reduced and days-on-market as buyer demand signals.
+    Signal type: competitor_listing | Score: 55
+    """
+    slug = 'competitor-mirror-ksl'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        for url, county in [
+            ('https://homes.ksl.com/for-sale/?sort=newest&county=Utah&limit=100', 'Utah'),
+            ('https://homes.ksl.com/for-sale/?sort=newest&county=SaltLake&limit=100', 'Salt Lake'),
+            ('https://homes.ksl.com/for-sale/?sort=price-reduced&limit=100', 'Utah'),
+        ]:
+            r = SESSION.get(url, timeout=15)
+            if r.status_code != 200:
+                lines = apify_text(url)
+                for line in lines:
+                    if any(w in line for w in ['bed', 'bath', '$', 'sqft', 'acre', 'sale']):
+                        if post_signal(slug, None, line[:200], url, 55, county, 'competitor_listing'):
+                            count += 1
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            listings = soup.select('.listing-item, .property-card, article, .result')
+            for listing in listings:
+                title = listing.get_text(separator=' ', strip=True)[:200]
+                link_el = listing.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'):
+                    link = 'https://homes.ksl.com' + link
+                if title and any(w in title.lower() for w in ['bed', 'bath', '$', 'sqft']):
+                    if post_signal(slug, None, title[:200], link, 55, county, 'competitor_listing'):
+                        count += 1
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_competitor_mirror_redfin():
+    """
+    Redfin — Price-reduced and new listings in Utah County + Salt Lake County.
+    Price-reduced listings on Redfin = motivated sellers with active buyer traffic.
+    Cross-referenced against distress DB in run_cross_side_convergence().
+    Signal type: competitor_listing | Score: 60
+    """
+    slug = 'competitor-mirror-redfin'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        for url, county in [
+            ('https://www.redfin.com/city/17312/UT/Salt-Lake-City', 'Salt Lake'),
+            ('https://www.redfin.com/city/14971/UT/Provo', 'Utah'),
+            ('https://www.redfin.com/county/1930/UT/Salt-Lake-County', 'Salt Lake'),
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                if any(w in line for w in ['Price drop', 'Reduced', 'price cut', 'days on market',
+                                            'New listing', 'Just listed', 'Hot home', 'median']):
+                    if post_signal(slug, None, line[:200], url, 60, county, 'competitor_listing'):
+                        count += 1
+                if count >= 20:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def run_cross_side_convergence():
+    """
+    Cross-Side Convergence Engine.
+    The DARPA layer. Matches buyer signals against seller distress signals on same address.
+    When a property appears in BOTH pp_scraper_signals (distress) AND as a competitor
+    listing or buyer-wanted post — posts a cross_side_convergence signal at score 85.
+    This is the highest-value signal in the entire system:
+    motivated seller + active buyer market attention = agent gets to both first.
+    Signal type: cross_side_convergence | Score: 85
+    """
+    slug = 'cross-side-convergence'
+    log.info(f'[{slug}] starting cross-side convergence scan')
+    count = 0
+    try:
+        import re
+        # Pull recent buyer signals (competitor listings, buyer wanted posts)
+        buyer_types = 'competitor_listing,buyer_wanted_post,social_buyer_intent,mortgage_application'
+        r_buyer = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=raw_address,source_slug,signal_type,score,county"
+            f"&signal_type=in.({buyer_types})"
+            f"&order=captured_at.desc&limit=2000",
+            headers=TABLE_HEADERS, timeout=20
+        )
+        buyer_signals = r_buyer.json() if isinstance(r_buyer.json(), list) else []
+
+        # Pull recent seller distress signals
+        seller_types = ('tax_delinquency,nts_notice,nod_notice,probate_notice,'
+                       'divorce_notice,code_enforcement,surplus_property,tax_sale,convergence')
+        r_seller = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=raw_address,source_slug,signal_type,score,county,raw_owner_name"
+            f"&signal_type=in.({seller_types})"
+            f"&order=captured_at.desc&limit=5000",
+            headers=TABLE_HEADERS, timeout=20
+        )
+        seller_signals = r_seller.json() if isinstance(r_seller.json(), list) else []
+
+        # Build normalized address index from seller signals
+        seller_index = {}
+        for sig in seller_signals:
+            addr = sig.get('raw_address', '')
+            if not addr:
+                continue
+            # Normalize: strip unit, uppercase, first 3 words
+            norm = re.sub(r'\s+', ' ', re.sub(
+                r'(APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', addr.upper()
+            )).strip()
+            short = ' '.join(norm.split(',')[0].split()[:3])
+            if short not in seller_index:
+                seller_index[short] = []
+            seller_index[short].append(sig)
+
+        # Check each buyer signal address against seller index
+        for buyer_sig in buyer_signals:
+            addr = buyer_sig.get('raw_address', '')
+            if not addr or len(addr) < 8:
+                continue
+            norm = re.sub(r'\s+', ' ', re.sub(
+                r'(APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', addr.upper()
+            )).strip()
+            short = ' '.join(norm.split(',')[0].split()[:3])
+            if short in seller_index:
+                matches = seller_index[short]
+                seller_types_found = list(set(m['signal_type'] for m in matches))
+                buyer_type = buyer_sig.get('signal_type', '')
+                desc = (f"CROSS-SIDE CONVERGENCE | Address: {addr[:80]} | "
+                        f"Buyer signal: {buyer_type} | "
+                        f"Seller signals: {', '.join(seller_types_found[:3])} | "
+                        f"Owner: {matches[0].get('raw_owner_name','')[:40]}")
+                url = buyer_sig.get('raw_url', 'https://premier-prospect-dashboard.surge.sh')
+                county = buyer_sig.get('county', 'Utah')
+                raw = f"{slug}|{addr}|{buyer_type}|{','.join(seller_types_found)}"
+                if post_signal(slug, None, desc[:200], url[:500], 85, county, 'cross_side_convergence'):
+                    count += 1
+
+        log.info(f'[{slug}] {count} cross-side convergence hits')
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    return count
+
+
+def scrape_warn_act_utah():
+    """
+    WARN Act Layoff Filings — Utah Department of Workforce Services.
+    Mass layoffs = displaced workers who become buyers.
+    People who just lost a job in Utah frequently relocate or
+    downsize — strong relocation/buyer intent signal.
+    Signal type: displaced_worker_buyer | Score: 50
+    """
+    slug = 'warn-act-utah'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        for url in [
+            'https://jobs.utah.gov/employer/business/warn.html',
+            'https://jobs.utah.gov/warn/',
+            'https://workforce.utah.gov/warn-act/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code == 200:
+                lines = apify_text(url)
+                for line in lines:
+                    if any(w in line for w in ['layoff', 'closure', 'WARN', 'employees',
+                                                'terminated', 'reduction', 'workers']):
+                        if len(line) > 15:
+                            if post_signal(slug, None, line[:200], url, 50, 'Utah', 'displaced_worker_buyer'):
+                                count += 1
+                        if count >= 15:
+                            break
+                if count > 0:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
 
