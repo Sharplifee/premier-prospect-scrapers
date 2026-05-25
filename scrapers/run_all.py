@@ -2099,9 +2099,30 @@ def scrape_linkedin_relocation_jobs():
     log.info(f'[{slug}] starting')
     count = 0
     # High-paying jobs in Utah = buyers not renters
+    # Only roles that produce $80k+ earners — actual buyers not renters
     HIGH_INTENT_TITLES = [
-        'director', 'manager', 'engineer', 'senior', 'principal', 'vp', 'vice president',
-        'analyst', 'architect', 'developer', 'scientist', 'lead', 'head of', 'chief'
+        'director', 'vp ', 'vice president', 'chief', 'principal',
+        'senior engineer', 'senior developer', 'senior software', 'senior data',
+        'senior analyst', 'senior architect', 'senior manager', 'senior product',
+        'staff engineer', 'staff software', 'lead engineer', 'lead developer',
+        'engineering manager', 'product manager', 'program manager', 'project manager',
+        'data scientist', 'machine learning', 'software engineer', 'solutions architect',
+        'account executive', 'sales director', 'regional manager', 'operations manager',
+        'finance manager', 'financial analyst', 'controller', 'cfo', 'cto', 'coo', 'ceo',
+        'attorney', 'counsel', 'physician', 'surgeon', 'dentist', 'pharmacist',
+        'nurse practitioner', 'physician assistant',
+    ]
+    # Explicitly exclude low-wage roles
+    EXCLUDE_TITLES = [
+        'cashier','associate','crew','shift lead','team member','barista',
+        'delivery','driver','warehouse','picker','packer','stocker',
+        'assistant manager' ,'zone lead','stretch manager','bakery','produce',
+        'technician','installer','hvac tech','mechanic','janitor','custodian',
+    ]
+    EXCLUDE_COMPANIES = [
+        'domino','pizza','mcdonald','burger','subway','taco bell','wendy',
+        'kroger','walmart','target','costco','dollar tree','dollar general',
+        'five below','oreilly','autozone','jiffy','jiffy lube',
     ]
     UTAH_BUYER_CITIES = ['salt lake', 'lehi', 'draper', 'south jordan', 'sandy',
                          'provo', 'orem', 'pleasant grove', 'american fork', 'herriman',
@@ -2136,10 +2157,29 @@ def scrape_linkedin_relocation_jobs():
                 if not title:
                     continue
                 # Only high-earning roles — these are buyers not renters
-                if not any(t in title.lower() for t in HIGH_INTENT_TITLES):
+                title_lower = title.lower()
+                comp_lower  = comp.lower() if comp else ''
+                if not any(t in title_lower for t in HIGH_INTENT_TITLES):
+                    continue
+                if any(e in title_lower for e in EXCLUDE_TITLES):
+                    continue
+                if any(e in comp_lower for e in EXCLUDE_COMPANIES):
                     continue
                 desc = f"{title} @ {comp} — {loc}"
-                if post_signal(slug, comp, desc[:200], url, 50, county, 'relocation_job_signal'):
+                raw = f"{slug}|{title}|{comp}|{loc}"
+                import hashlib as _hl
+                dedup = _hl.md5(raw.encode()).hexdigest()
+                payload = {
+                    'source_slug': slug, 'raw_address': desc[:200],
+                    'raw_owner_name': comp[:200], 'raw_url': url[:500],
+                    'score': 50, 'county': county,
+                    'signal_type': 'relocation_job_signal',
+                    'dedupe_hash': dedup,
+                }
+                r_ins = SESSION.post(TABLE_URL, json=payload,
+                    headers={**TABLE_HEADERS,'Prefer':'return=minimal,resolution=ignore-duplicates'},
+                    timeout=15)
+                if r_ins.status_code in (200,201):
                     count += 1
             if count >= 40:
                 break
