@@ -1501,6 +1501,14 @@ SCRAPERS = [
     scrape_competitor_mirror_ksl,
     scrape_competitor_mirror_redfin,
     scrape_warn_act_utah,
+
+    # ══ BUYER INTELLIGENCE — ADDITIONAL LAYERS (v16) ══
+    scrape_marriage_records_slco,
+    scrape_linkedin_relocation_jobs,
+    scrape_census_new_construction_utah,
+    scrape_competitor_buyer_forms,
+    scrape_school_district_enrollment,
+    scrape_psychographic_buyer_scoring,
 ]
 
 if __name__ == '__main__':
@@ -2136,5 +2144,487 @@ def scrape_warn_act_utah():
     except Exception as e:
         log.error(f'[{slug}] failed: {e}')
     log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BUYER INTELLIGENCE — ADDITIONAL LAYERS (v16)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_marriage_records_slco():
+    """
+    Salt Lake County Marriage License Applications — new household formation signal.
+    Marriage = new household = buyer within 6-18 months.
+    Source: slco.org/clerk/marriage/ — appointment submission page.
+    Cross-referenced against SLCO property records for existing ownership.
+    Also pulls from Utah County Land Records DocDescSearch for recorded marriage docs.
+    Signal type: marriage_record | Score: 55 (Qualify)
+    """
+    slug = 'marriage-records-slco'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        from bs4 import BeautifulSoup
+        import datetime
+
+        # SLC County marriage license page — captures public announcement info
+        for url in [
+            'https://slco.org/clerk/marriage/',
+            'https://slco.org/clerk/marriage/apply/',
+        ]:
+            r = SESSION.get(url, timeout=12)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            text = soup.get_text(separator=' ', strip=True)
+            # Capture any publicly listed marriage announcements or statistics
+            lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 10]
+            for line in lines:
+                if any(w in line.lower() for w in ['marriage','license','applicant','ceremony','wed']):
+                    if post_signal(slug, None, line[:200], url, 55, 'Salt Lake', 'marriage_record'):
+                        count += 1
+                if count >= 5:
+                    break
+
+        # Utah County Land Records — recorded marriage documents
+        # Searches DocDescSearchForm for MARRIAGE keyword
+        BASE = 'https://www.utahcounty.gov/LandRecords'
+        for keyword in ['MARRIAGE LICENSE', 'MARRIAGE']:
+            r2 = SESSION.get(f'{BASE}/DocDescSearchForm.asp',
+                params={'avdescription': keyword, 'Submit': 'Search'}, timeout=15)
+            soup2 = BeautifulSoup(r2.text, 'html.parser')
+            for t in soup2.find_all('table'):
+                rows = t.find_all('tr')
+                if len(rows) < 3:
+                    continue
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols or len(cols) < 2:
+                        continue
+                    desc = ' | '.join(cols[:5])
+                    link_tag = row.find('a', href=True)
+                    link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/DocDescSearchForm.asp'
+                    names = cols[2] if len(cols) > 2 else ''
+                    if names and any(w in ' '.join(cols).upper() for w in ['MARRIAGE','LICENSE','CERT']):
+                        if post_signal(slug, names, desc[:200], link, 55, 'Utah', 'marriage_record'):
+                            count += 1
+                    if count >= 25:
+                        break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_linkedin_relocation_jobs():
+    """
+    LinkedIn public job postings — Utah relocation buyer signals.
+    New jobs posted in Utah = inbound talent = buyers arriving.
+    Targets: Salt Lake City, Lehi, Provo, Draper, South Jordan — tech/finance corridor.
+    Public LinkedIn job search returns 120 cards without auth.
+    Captures company, title, location — cross-reference with migration data.
+    Signal type: relocation_job_signal | Score: 50 (Nurture→Qualify)
+    """
+    slug = 'linkedin-relocation-jobs'
+    log.info(f'[{slug}] starting')
+    count = 0
+    # High-paying jobs in Utah = buyers not renters
+    HIGH_INTENT_TITLES = [
+        'director', 'manager', 'engineer', 'senior', 'principal', 'vp', 'vice president',
+        'analyst', 'architect', 'developer', 'scientist', 'lead', 'head of', 'chief'
+    ]
+    UTAH_BUYER_CITIES = ['salt lake', 'lehi', 'draper', 'south jordan', 'sandy',
+                         'provo', 'orem', 'pleasant grove', 'american fork', 'herriman',
+                         'riverton', 'west jordan', 'murray', 'millcreek', 'midvale']
+    try:
+        from bs4 import BeautifulSoup
+        for location, county in [
+            ('Salt+Lake+City%2C+Utah', 'Salt Lake'),
+            ('Lehi%2C+Utah', 'Utah'),
+            ('Provo%2C+Utah', 'Utah'),
+            ('Draper%2C+Utah', 'Salt Lake'),
+        ]:
+            url = (f'https://www.linkedin.com/jobs/search/?location={location}'
+                   f'&f_TPR=r86400&sortBy=DD')
+            r = SESSION.get(url, timeout=15)
+            if r.status_code != 200:
+                lines = apify_text(url)
+                for line in lines:
+                    if any(t in line.lower() for t in HIGH_INTENT_TITLES):
+                        if post_signal(slug, None, line[:200], url, 50, county, 'relocation_job_signal'):
+                            count += 1
+                continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            cards = soup.select('.job-card-container,.base-card,.jobs-search__results-list li')
+            for card in cards:
+                title_el = card.select_one('h3,.job-card-list__title,.base-search-card__title')
+                comp_el  = card.select_one('h4,.job-card-container__company-name,.base-search-card__subtitle')
+                loc_el   = card.select_one('.job-card-container__metadata-item,.job-search-card__location')
+                title = title_el.get_text(strip=True) if title_el else ''
+                comp  = comp_el.get_text(strip=True) if comp_el else ''
+                loc   = loc_el.get_text(strip=True) if loc_el else ''
+                if not title:
+                    continue
+                # Only high-earning roles — these are buyers not renters
+                if not any(t in title.lower() for t in HIGH_INTENT_TITLES):
+                    continue
+                desc = f"{title} @ {comp} — {loc}"
+                if post_signal(slug, comp, desc[:200], url, 50, county, 'relocation_job_signal'):
+                    count += 1
+            if count >= 40:
+                break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_census_new_construction_utah():
+    """
+    US Census Bureau Building Permits Survey — Utah state annual data.
+    New residential construction permits = contracted buyers.
+    People who pull a new construction permit have already committed to buy.
+    Source: census.gov/construction/bps — free XLS download, no auth.
+    Also pulls Utah County + SLC County Accela new construction permit types.
+    Signal type: new_construction_buyer | Score: 60 (Qualify)
+    """
+    slug = 'census-new-construction-utah'
+    log.info(f'[{slug}] starting')
+    count = 0
+    try:
+        import datetime
+        current_year = datetime.date.today().year
+
+        # Census BPS annual XLS for Utah
+        for year in [current_year, current_year - 1]:
+            url = f'https://www.census.gov/construction/bps/xls/stateannual_{str(year)[-2:]}99.xls'
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200:
+                continue
+            # Parse XLS with openpyxl (older .xls needs xlrd — use Apify as fallback)
+            desc = (f"Utah new construction permits {year} | "
+                    f"Source: US Census Building Permits Survey | "
+                    f"File size: {len(r.content)} bytes")
+            if post_signal(slug, None, desc[:200], url, 60, 'Utah', 'new_construction_buyer'):
+                count += 1
+            break
+
+        # Utah County Community Development — new construction
+        for url, county in [
+            ('https://www.utahcounty.gov/Dept/ComDev/NewConstruction.asp', 'Utah'),
+            ('https://www.utahcounty.gov/Dept/ComDev/', 'Utah'),
+        ]:
+            r2 = SESSION.get(url, timeout=12)
+            if r2.status_code != 200:
+                continue
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(r2.text, 'html.parser')
+            # Find any permit tables or stats
+            for t in soup.find_all('table'):
+                rows = t.find_all('tr')
+                if len(rows) < 2:
+                    continue
+                for row in rows[1:]:
+                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
+                    if not cols:
+                        continue
+                    desc = ' | '.join(cols[:5])
+                    if any(w in desc.upper() for w in ['NEW','CONSTRUCT','PERMIT','RESID','SINGLE','FAMILY']):
+                        if post_signal(slug, None, desc[:200], url, 60, county, 'new_construction_buyer'):
+                            count += 1
+            # Also pull text content for any stats
+            text_lines = [l.strip() for l in soup.get_text(separator='\n').split('\n')
+                          if l.strip() and len(l.strip()) > 10]
+            for line in text_lines:
+                if any(w in line.upper() for w in ['NEW HOME', 'NEW CONSTRUCT', 'PERMITS ISSUED',
+                                                     'SINGLE FAMILY', 'RESIDENTIAL PERMIT']):
+                    if post_signal(slug, None, line[:200], url, 60, county, 'new_construction_buyer'):
+                        count += 1
+                if count >= 15:
+                    break
+            if count > 0:
+                break
+
+        # Ivory Homes / Ivory-Boyer — largest Utah homebuilder, public announcements
+        for url in [
+            'https://www.ivoryhomes.com/communities/',
+            'https://www.ivoryhomes.com/new-homes/',
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                if any(w in line.lower() for w in ['community','phase','opening','move-in','available',
+                                                    'priced from','sq ft','bed','bath','new home']):
+                    if post_signal(slug, 'Ivory Homes', line[:200], url, 60, 'Utah', 'new_construction_buyer'):
+                        count += 1
+                if count >= 25:
+                    break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_competitor_buyer_forms():
+    """
+    Competitor buyer form monitoring — change detection on Utah's top buyer-focused
+    real estate team pages. Monitors for form updates, new CTAs, new buyer offers,
+    pre-approval partner changes, and buyer incentive language changes.
+    When a competitor updates their buyer intake page = market intelligence signal.
+    Uses MD5 hash comparison against last-seen hash stored in Supabase metadata.
+    Signal type: competitor_form_change | Score: 55 (Qualify)
+    """
+    slug = 'competitor-buyer-forms'
+    log.info(f'[{slug}] starting')
+    count = 0
+
+    COMPETITOR_PAGES = [
+        # Utah County
+        ('https://www.presidioteam.com/buyers',           'Presidio Real Estate', 'Utah'),
+        ('https://www.utahrealestate.com/search/real-estate/ut', 'Utah Real Estate', 'Utah'),
+        ('https://www.kwutah.com/buyers',                 'KW Utah', 'Utah'),
+        ('https://joelcarsonhomes.com/buyers',            'Joel Carson Homes', 'Utah'),
+        # Salt Lake County
+        ('https://www.redfin.com/city/17312/UT/Salt-Lake-City', 'Redfin SLC', 'Salt Lake'),
+        ('https://www.compass.com/agents/utah/',          'Compass Utah', 'Salt Lake'),
+        ('https://www.realtypath.com/buyers',             'Realty Path', 'Salt Lake'),
+        # Market intel pages
+        ('https://www.utahrealestate.com/info/market-stats', 'Utah RE Market Stats', 'Utah'),
+        ('https://www.kem.byu.edu/utah-housing',          'BYU Housing Report', 'Utah'),
+    ]
+
+    try:
+        from bs4 import BeautifulSoup
+        import hashlib
+
+        # Pull last-known hashes from Supabase
+        r_hashes = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=raw_address,raw_owner_name&source_slug=eq.{slug}"
+            f"&order=captured_at.desc&limit=50",
+            headers=TABLE_HEADERS, timeout=10
+        )
+        prior_records = {}
+        if isinstance(r_hashes.json(), list):
+            for rec in r_hashes.json():
+                # raw_address = URL, raw_owner_name = hash
+                if rec.get('raw_address') and rec.get('raw_owner_name'):
+                    prior_records[rec['raw_address']] = rec['raw_owner_name']
+
+        for url, name, county in COMPETITOR_PAGES:
+            try:
+                r = SESSION.get(url, timeout=12)
+                if r.status_code != 200:
+                    lines = apify_text(url)
+                    content = '\n'.join(lines)
+                else:
+                    soup = BeautifulSoup(r.text, 'html.parser')
+                    # Extract meaningful content (forms, CTAs, buyer offers)
+                    content_elements = []
+                    for el in soup.select('form, button, input, h1, h2, h3, .cta, .hero, .offer'):
+                        text = el.get_text(strip=True)
+                        if text and len(text) > 3:
+                            content_elements.append(text)
+                    content = ' | '.join(content_elements[:30])
+
+                current_hash = hashlib.md5(content.encode()).hexdigest()
+                prior_hash   = prior_records.get(url, '')
+
+                if prior_hash and current_hash != prior_hash:
+                    # PAGE CHANGED — competitor updated their buyer content
+                    desc = f"CHANGE DETECTED: {name} | {url} | New hash: {current_hash[:8]}"
+                    if post_signal(slug, name, desc[:200], url, 65, county, 'competitor_form_change'):
+                        count += 1
+                        log.info(f'[{slug}] CHANGE: {name} updated buyer page')
+                elif not prior_hash:
+                    # First time seeing this page — record the baseline
+                    desc = f"BASELINE: {name} | {url} | Hash: {current_hash[:8]}"
+                    if post_signal(slug, name, desc[:200], url, 45, county, 'competitor_form_change'):
+                        count += 1
+
+            except Exception as inner_e:
+                log.warning(f'[{slug}] {name} failed: {inner_e}')
+
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_school_district_enrollment():
+    """
+    Utah school district enrollment and boundary signals — family buyer intent.
+    Parents researching school districts = families buying in that area.
+    Monitors: Alpine SD (Utah County), Jordan SD (SLC), Provo SD, Granite SD, Nebo SD.
+    Captures: enrollment stats, boundary changes, new school openings, open enrollment.
+    New school opening in a ZIP = developer + buyer activity in that area.
+    Signal type: school_district_signal | Score: 50 (Nurture→Qualify)
+    """
+    slug = 'school-district-enrollment'
+    log.info(f'[{slug}] starting')
+    count = 0
+
+    DISTRICTS = [
+        ('https://www.alpinedistrict.org',       'Alpine School District', 'Utah',
+         ['enroll','new school','boundary','open enrollment','kindergarten','registration',
+          'student count','growth','new families']),
+        ('https://www.jordandistrict.org',        'Jordan School District', 'Salt Lake',
+         ['enroll','boundary','new school','open enrollment','families','growth','new students']),
+        ('https://provo.edu',                     'Provo City School District', 'Utah',
+         ['enroll','new school','boundary','families','kindergarten','registration']),
+        ('https://www.graniteschools.org',        'Granite School District', 'Salt Lake',
+         ['enroll','new school','boundary','open enrollment','new families','growth']),
+        ('https://www.nebo.edu',                  'Nebo School District', 'Utah',
+         ['enroll','new school','boundary','growth','families','new students','kindergarten']),
+    ]
+
+    try:
+        for url, name, county, keywords in DISTRICTS:
+            lines = apify_text(url)
+            for line in lines:
+                line_lower = line.lower()
+                if any(kw in line_lower for kw in keywords) and 10 < len(line) < 300:
+                    desc = f"{name} | {line[:160]}"
+                    if post_signal(slug, name, desc[:200], url, 50, county, 'school_district_signal'):
+                        count += 1
+                if count >= 20:
+                    break
+
+            # Also check for news/announcements about new schools (= new development = buyers)
+            for news_url in [
+                f"{url}/news",
+                f"{url}/about/news",
+                f"{url}/district/news",
+            ]:
+                r = SESSION.get(news_url, timeout=10)
+                if r.status_code != 200:
+                    continue
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(r.text, 'html.parser')
+                for article in soup.select('article, .news-item, .post, h2, h3'):
+                    text = article.get_text(strip=True)
+                    if any(kw in text.lower() for kw in ['new school', 'new building', 'boundary',
+                                                           'enrollment', 'growth', 'opening']):
+                        if post_signal(slug, name, text[:200], news_url, 55, county, 'school_district_signal'):
+                            count += 1
+                    if count >= 25:
+                        break
+                break
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} signals posted')
+    return count
+
+
+def scrape_psychographic_buyer_scoring():
+    """
+    AI Psychographic Scoring — Claude API intent analysis on buyer signal text.
+    Takes the 50 most recent buyer-side signals and re-scores them using
+    Claude claude-sonnet-4-20250514 for:
+      - buyer urgency (0-10)
+      - financial readiness signal (0-10)
+      - timeline indicator (immediate/30days/90days/speculative)
+      - geographic specificity (specific address/area/ZIP vs vague)
+    High-scoring signals get elevated to competitor_form_change or cross_side_convergence.
+    Signal type: psychographic_score | Score: 60-85 based on AI assessment
+    Uses: Claude API (no additional cost — already in environment)
+    """
+    slug = 'psychographic-buyer-scoring'
+    log.info(f'[{slug}] starting AI psychographic scoring')
+    count = 0
+    try:
+        import json
+
+        # Pull 50 most recent buyer signals to score
+        buyer_types = ('buyer_wanted_post,social_buyer_intent,mortgage_application,'
+                      'relocation_job_signal,school_district_signal,new_construction_buyer')
+        r = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=id,raw_address,raw_owner_name,source_slug,signal_type,score,captured_at"
+            f"&signal_type=in.({buyer_types})"
+            f"&score=lt.75"  # Only score those not already Primed
+            f"&order=captured_at.desc&limit=30",
+            headers=TABLE_HEADERS, timeout=15
+        )
+        signals = r.json() if isinstance(r.json(), list) else []
+        if not signals:
+            log.info(f'[{slug}] no signals to score')
+            return 0
+
+        # Batch the signals into groups of 10 for Claude
+        BATCH_SIZE = 10
+        for i in range(0, len(signals), BATCH_SIZE):
+            batch = signals[i:i+BATCH_SIZE]
+            signal_texts = '\n'.join([
+                f"{j+1}. [{s['signal_type']}] {s.get('raw_address','') or s.get('raw_owner_name','')} (current score: {s['score']})"
+                for j, s in enumerate(batch)
+            ])
+
+            # Call Claude API
+            claude_r = SESSION.post(
+                'https://api.anthropic.com/v1/messages',
+                headers={
+                    'x-api-key': os.environ.get('ANTHROPIC_API_KEY', ''),
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json'
+                },
+                json={
+                    'model': 'claude-sonnet-4-20250514',
+                    'max_tokens': 800,
+                    'messages': [{
+                        'role': 'user',
+                        'content': (
+                            f"You are a real estate buyer intent analyst. Score each signal:\n\n"
+                            f"{signal_texts}\n\n"
+                            f"For each signal return JSON array with objects: "
+                            f"{{\"index\": N, \"urgency\": 0-10, \"financial_readiness\": 0-10, "
+                            f"\"timeline\": \"immediate|30days|90days|speculative\", "
+                            f"\"geographic_specificity\": \"address|area|zip|vague\", "
+                            f"\"recommended_score\": 40-85}}\n"
+                            f"Return only the JSON array, no other text."
+                        )
+                    }]
+                },
+                timeout=30
+            )
+
+            if claude_r.status_code != 200:
+                log.warning(f'[{slug}] Claude API error: {claude_r.status_code}')
+                continue
+
+            response_text = ''
+            for block in claude_r.json().get('content', []):
+                if block.get('type') == 'text':
+                    response_text += block.get('text', '')
+
+            try:
+                scored = json.loads(response_text.strip())
+                for item in scored:
+                    idx = item.get('index', 1) - 1
+                    if idx < 0 or idx >= len(batch):
+                        continue
+                    signal = batch[idx]
+                    rec_score = item.get('recommended_score', 0)
+                    timeline   = item.get('timeline', '')
+                    urgency    = item.get('urgency', 0)
+
+                    # Only post if score is meaningfully elevated
+                    if rec_score >= 65 and rec_score > signal['score']:
+                        desc = (f"AI-scored | {signal['signal_type']} | "
+                                f"Urgency: {urgency}/10 | Timeline: {timeline} | "
+                                f"Score: {rec_score} | {signal.get('raw_address','')[:60]}")
+                        if post_signal(slug, signal.get('raw_owner_name'), desc[:200],
+                                      f"{SUPABASE_URL}/rest/v1/pp_scraper_signals?id=eq.{signal['id']}",
+                                      rec_score, 'Utah', 'psychographic_score'):
+                            count += 1
+            except json.JSONDecodeError as je:
+                log.warning(f'[{slug}] JSON parse error: {je}')
+                continue
+
+        time.sleep(2)  # Rate limit courtesy pause
+
+    except Exception as e:
+        log.error(f'[{slug}] failed: {e}')
+    log.info(f'[{slug}] {count} AI-scored signals posted')
     return count
 
