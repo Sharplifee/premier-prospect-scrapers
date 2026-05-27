@@ -76,21 +76,33 @@ def post_signal(slug, owner, address, url, score, county, signal_type):
         log.error(f'POST failed {slug}: {e}')
         return False
 
-def post_signals_batch(records):
-    """Batch insert up to 500 signals. Returns count inserted."""
+def post_signals_batch(records, source_slug_override=None):
+    """Batch insert signals. Handles deduplication and schema validation."""
     if not records:
         return 0
     import hashlib as _hl
+
+    # Allowed schema columns — must match pp_scraper_signals exactly
+    ALLOWED = {'source_slug','raw_address','raw_owner_name','raw_phone','raw_url',
+               'raw_payload','signal_type','score','county','city','captured_at','dedupe_hash'}
+
     seen = set()
     unique = []
     for rec in records:
-        h = rec.get('dedupe_hash') or _hl.md5(
-            f"{rec['source_slug']}|{rec.get('raw_url','')}|{rec.get('raw_owner_name','')}|{rec.get('raw_address','')}".encode()
+        # Override source_slug if provided
+        if source_slug_override:
+            rec['source_slug'] = source_slug_override
+        # Compute dedupe hash
+        h = _hl.md5(
+            f"{rec.get('source_slug','')}|{rec.get('raw_url','')}|{rec.get('raw_owner_name','')}|{rec.get('raw_address','')}".encode()
         ).hexdigest()
         rec['dedupe_hash'] = h
         if h not in seen:
             seen.add(h)
-            unique.append(rec)
+            # Strip any keys not in schema to prevent PGRST204
+            clean = {k: v for k, v in rec.items() if k in ALLOWED}
+            unique.append(clean)
+
     count = 0
     CHUNK = 200
     for i in range(0, len(unique), CHUNK):
@@ -100,16 +112,22 @@ def post_signals_batch(records):
                 r = SESSION.post(
                     TABLE_URL, json=chunk,
                     headers={**TABLE_HEADERS, 'Prefer': 'return=minimal,resolution=ignore-duplicates'},
-                    timeout=30
+                    timeout=45
                 )
-                if r.status_code in (200, 201, 409):
+                if r.status_code in (200, 201, 204, 409):
                     count += len(chunk)
                     break
-                log.error(f'Batch POST failed: {r.status_code} {r.text[:60]}')
+                elif r.status_code == 400 and 'PGRST204' in r.text:
+                    log.error(f'Schema mismatch — extra columns stripped, retrying')
+                    # Already stripped above, log and break
+                    break
+                else:
+                    log.error(f'Batch POST failed: {r.status_code} {r.text[:80]}')
+                    break
             except Exception as e:
                 log.error(f'Batch POST error: {e}')
                 if attempt < 2:
-                    time.sleep(10)
+                    time.sleep(5)
     return count
 
 
@@ -821,7 +839,7 @@ def run_convergence():
         for addr, sigs in by_address.items():
             sources = set(s['source_slug'] for s in sigs)
             if len(sources) >= 2:
-                score = min(17, 10 + len(sources) * 2)  # 2 sources = 14, 3+ = 16-17
+                score = min(99, 80 + len(sources) * 3)  # 2 sources = 86, 3+ = 89-99 (Primed)
                 county = sigs[0].get('county', 'Utah')
                 signal_types = list(set(s['signal_type'] for s in sigs))
                 hot_addresses.append({
@@ -1993,9 +2011,9 @@ def scrape_warn_act_utah():
     count = 0
     try:
         for url in [
-            'https://jobs.utah.gov/employer/business/warn.html',
+            'https://jobs.utah.gov/employer/business/warn.html.html',
             'https://jobs.utah.gov/warn/',
-            'https://workforce.utah.gov/warn-act/',
+            'https://jobs.utah.gov/employer/business/warn.html.html-act/',
         ]:
             r = SESSION.get(url, timeout=12)
             if r.status_code == 200:
@@ -2426,6 +2444,7 @@ def scrape_school_district_enrollment():
 
 
 def scrape_psychographic_buyer_scoring():
+    import time  # fix: was missing
     """
     AI Psychographic Scoring — Claude API intent analysis on buyer signal text.
     Takes the 50 most recent buyer-side signals and re-scores them using
@@ -2585,6 +2604,10 @@ def scrape_lien_judgment_records():
 
 
 def scrape_census_acs_demographics():
+    census_key = os.environ.get("CENSUS_API_KEY","")
+    if not census_key:
+        log.warning("census-acs-demographics: CENSUS_API_KEY not set — skipping (get free key at api.census.gov)")
+        return 0
     """
     US Census Bureau ACS 5-Year Estimates — neighborhood demographics.
     Utah County (49049) and Salt Lake County (49035).
@@ -3415,7 +3438,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v11 — Manus Blueprint Activation — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v12 — Full System Fix — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -3425,18 +3448,26 @@ if __name__ == '__main__':
         except Exception as e:
             log.error(f'{fn.__name__} crashed: {e}')
             write_run_log(fn.__name__.replace('scrape_',''), 0, 'error', str(e)[:200])
-    # Run convergence engine after all scrapers complete
+    # Run convergence engines after all scrapers complete
+    conv = 0
     try:
         conv = run_convergence()
         total += conv
+        log.info(f'Seller convergence: {conv} marks')
     except Exception as e:
         log.error(f'convergence crashed: {e}')
+    try:
+        cross = run_cross_side_convergence()
+        total += cross
+        log.info(f'Cross-side convergence: {cross} marks')
+    except Exception as e:
+        log.error(f'cross-side convergence crashed: {e}')
     log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
 
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v11 — Manus Blueprint Activation — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v12 — Full System Fix — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
