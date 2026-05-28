@@ -3,7 +3,8 @@ Premier Prospect — GitHub Actions Scraper Runner v6
 Apify fetch + text-based parsing (no HTML/soup needed).
 24 active sources. Fully tested parsers.
 """
-import os, hashlib, logging, requests, re
+import os, hashlib, logging, requests, re, json, time
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('pp.scrapers')
@@ -168,19 +169,39 @@ def fetch_json(url, params=None):
 # ─── SCRAPERS ────────────────────────────────────────────────────────────────
 
 def scrape_obituaries_herald():
+    """Daily Herald obituaries — RSS feed. Owner death = estate property signal."""
     slug = 'obituaries-herald'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.heraldextra.com/obituaries/')
-    count = 0
-    for i, line in enumerate(lines):
-        # Name is followed by a "Month DD, YYYY" date line
-        if i+1 < len(lines) and any(lines[i+1].startswith(m) for m in MONTHS):
-            name = line
-            if 4 < len(name) < 70 and not name[0].isdigit() and '|' not in name:
-                if post_signal(slug, name, None, 'https://www.heraldextra.com/obituaries/', 55, 'Utah', 'obituary'):
-                    count += 1
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://www.heraldextra.com/obituaries/')
+        kw = ['born', 'passed', 'survived', 'memorial', 'funeral', 'services', 'resided', 'home']
+        current = []
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if any(k in line.lower() for k in kw) and len(line) > 20:
+                current.append(line)
+            if len(current) >= 3:
+                full_text = ' '.join(current)
+                addr_match = re.search(r'\d+\s+\w+\s+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|Circle)', full_text, re.IGNORECASE)
+                name_match = re.search(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})', current[0])
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': name_match.group(1) if name_match else current[0][:60],
+                    'raw_address': addr_match.group() if addr_match else 'Utah Valley',
+                    'raw_payload': json.dumps({'text': full_text[:300], 'source': 'herald_obituaries'}),
+                    'signal_type': 'obituary',
+                    'score': 85,
+                    'county': 'Utah',
+                    'city': None,
+                })
+                current = []
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_uvhba_directory():
     """UVHBA — Utah Valley Home Builders Association member directory."""
@@ -256,18 +277,33 @@ def scrape_probate_court():
 
 
 def scrape_utah_county_tax_delinquency():
+    """Utah County tax delinquency — live search via state property tax portal."""
     slug = 'utah-county-tax-delinquency'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://propertytax.utah.gov/')
-    count = 0
-    kw = ['delinquent','tax sale','lien','delinquency','notice','penalty']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and 8 < len(line) < 300:
-            if post_signal(slug, None, line[:200], 'https://propertytax.utah.gov/', 80, 'Utah', 'tax_delinquency'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://propertytax.utah.gov/county/utah/delinquent')
+        for line in lines:
+            if any(k in line.lower() for k in ['delinquent', 'tax sale', 'unpaid', 'lien', 'parcel', 'overdue']):
+                owner = re.search(r'^([A-Z][A-Z\s,&]+)(?=\s)', line)
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct)', line, re.IGNORECASE)
+                amount = re.search(r'\$[\d,]+\.?\d*', line)
+                if len(line) > 5:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': owner.group(1)[:80] if owner else None,
+                        'raw_address': addr.group()[:120] if addr else line[:80],
+                        'raw_payload': json.dumps({'line': line[:200], 'amount': amount.group() if amount else ''}),
+                        'signal_type': 'tax_delinquency',
+                        'score': 65,
+                        'county': 'Utah',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_utah_county_nts():
     """Utah County NTS — via Land Records trustee/foreclosure document search."""
@@ -386,45 +422,91 @@ def scrape_wasatch_tax_sale():
     return count
 
 def scrape_wasatch_county_nts():
+    """Wasatch County NTS — treasurer delinquent taxes and legal notices."""
     slug = 'wasatch-county-nts'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://wasatch.utah.gov/departments/treasurer')
-    count = 0
-    kw = ['trustee','foreclosure','default','notice','delinquent']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and len(line) > 15:
-            if post_signal(slug, None, line[:300], 'https://wasatch.utah.gov/departments/treasurer', 75, 'Wasatch', 'nts_notice'):
-                count += 1
-            if count >= 20: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        for url in ['https://wasatch.utah.gov/departments/treasurer/delinquent-taxes',
+                    'https://wasatch.utah.gov/departments/clerk/legal-notices']:
+            lines = apify_text(url)
+            for line in lines:
+                if any(k in line.lower() for k in ['trustee', 'foreclosure', 'delinquent', 'notice', 'sale', 'lien', 'tax']):
+                    if len(line) > 10:
+                        owner = re.search(r'^([A-Z][A-Z\s,]+)(?=\s+\d)', line)
+                        addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way)', line, re.IGNORECASE)
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': owner.group(1)[:80] if owner else None,
+                            'raw_address': addr.group()[:120] if addr else line[:80],
+                            'raw_payload': json.dumps({'line': line[:200], 'url': url}),
+                            'signal_type': 'nts',
+                            'score': 99,
+                            'county': 'Wasatch',
+                            'city': None,
+                        })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_slc_assessor():
+    """SLC County Assessor — recent property sales and assessments."""
     slug = 'slc-assessor'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.saltlakecounty.gov/assessor/')
-    count = 0
-    kw = ['parcel','property','value','appeal','lookup','search','data','assessment']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and 8 < len(line) < 200:
-            if post_signal(slug, None, line[:200], 'https://www.saltlakecounty.gov/assessor/', 40, 'Salt Lake', 'assessor_record'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://slco.org/assessor/new-search/search.html')
+        for line in lines:
+            addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct)', line, re.IGNORECASE)
+            price = re.search(r'\$[\d,]+', line)
+            if addr and price:
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group()[:120],
+                    'raw_payload': json.dumps({'line': line[:200], 'price': price.group()}),
+                    'signal_type': 'comparable_sale',
+                    'score': 45,
+                    'county': 'Salt Lake',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_slc_real_estate():
+    """SLC County public real estate sales — surplus and foreclosure properties."""
     slug = 'slc-real-estate'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.saltlakecounty.gov/real-estate/public-sale/')
-    count = 0
-    for line in lines:
-        if any(c.isdigit() for c in line) and 15 < len(line) < 400:
-            if post_signal(slug, None, line[:300], 'https://www.saltlakecounty.gov/real-estate/public-sale/', 50, 'Salt Lake', 'surplus_property'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        for url in ['https://www.saltlakecounty.gov/real-estate/public-sale/',
+                    'https://www.saltlakecounty.gov/real-estate/']:
+            lines = apify_text(url)
+            for line in lines:
+                if any(k in line.lower() for k in ['property', 'parcel', 'sale', 'auction', 'bid', 'address', 'surplus']):
+                    addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W)', line, re.IGNORECASE)
+                    if addr and len(line) > 10:
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': addr.group()[:120],
+                            'raw_payload': json.dumps({'line': line[:200]}),
+                            'signal_type': 'public_sale',
+                            'score': 65,
+                            'county': 'Salt Lake',
+                            'city': 'Salt Lake City',
+                        })
+            if signals: break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_slc_public_surplus():
     slug = 'slc-public-surplus'
@@ -454,17 +536,34 @@ def scrape_wasatch_public_surplus():
     return count
 
 def scrape_south_slc_permits():
+    """South Salt Lake building permits."""
     slug = 'south-slc-permits'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.southsaltlake.org/172/Building-Permits')
-    count = 0
-    for line in lines:
-        if any(w in line.lower() for w in ['permit','building','construction','inspection','address']) and len(line) > 10:
-            if post_signal(slug, None, line[:200], 'https://www.southsaltlake.org/172/Building-Permits', 35, 'Salt Lake', 'permit'):
-                count += 1
-            if count >= 20: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        for url in ['https://www.southsaltlake.org/government/departments/community-development/building-permits',
+                    'https://www.southsaltlake.org/government/departments/community-development']:
+            lines = apify_text(url)
+            for line in lines:
+                if any(k in line.lower() for k in ['permit', 'issued', 'address', 'contractor', 'residential']):
+                    addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way)', line, re.IGNORECASE)
+                    if len(line) > 10:
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': addr.group()[:120] if addr else line[:80],
+                            'raw_payload': json.dumps({'line': line[:200]}),
+                            'signal_type': 'building_permit',
+                            'score': 45,
+                            'county': 'Salt Lake',
+                            'city': 'South Salt Lake',
+                        })
+            if signals: break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_south_slc_permits_pdf():
     slug = 'south-slc-permits-pdf'
@@ -487,10 +586,10 @@ def scrape_utah_county_codev():
     try:
         # ArcGIS REST endpoint for Utah County code enforcement
         arcgis_urls = [
-            'https://maps.utahcounty.gov/arcgis/rest/services/Code_Enforcement/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=200',
+            'https://gis.utahcounty.gov/server/rest/services/PublicView/Planning/MapServer/0/query?where=1%3D1&outFields=ADDRESS,DESCRIPTION,STATUS&f=json&resultRecordCount=100',
             'https://gis.utahcounty.gov/arcgis/rest/services/PublicView/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=100',
         ]
-        import json as _json
+        # json already imported at top level
         for url in arcgis_urls:
             r = SESSION.get(url, timeout=20)
             if r.status_code != 200: continue
@@ -514,52 +613,104 @@ def scrape_utah_county_codev():
                     'city': None,
                 })
             break
+        # Apify fallback if ArcGIS is blocked
+        if not signals:
+            lines = apify_text('https://www.utahcounty.gov/dept/bldgservices/publicreports/')
+            for line in lines:
+                if any(w in line.lower() for w in ['violation', 'citation', 'notice', 'complaint']):
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': line[:120],
+                        'raw_payload': json.dumps({'line': line[:200], 'source': 'apify_fallback'}),
+                        'signal_type': 'code_violation',
+                        'score': 82,
+                        'county': 'Utah',
+                        'city': None,
+                    })
     except Exception as e:
         log.error(f'[{slug}] {e}')
     return post_signals_batch(signals)
 
 
 def scrape_utah_county_directory():
+    """Utah County Recorder — recent document filings via land records."""
     slug = 'utah-county-directory'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://recorder.utahcounty.gov/find-records')
-    count = 0
-    kw = ['deed','transfer','lien','mortgage','notice','record','document','title']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and 5 < len(line) < 200:
-            if post_signal(slug, None, line[:200], 'https://recorder.utahcounty.gov/find-records', 60, 'Utah', 'deed_transfer'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://www.utahcounty.gov/LandRecords/PartyNameForm.asp')
+        for line in lines:
+            if any(k in line.lower() for k in ['deed', 'trust', 'lien', 'notice', 'mortgage', 'record']):
+                if len(line) > 8:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': line[:120],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'recorder_document',
+                        'score': 35,
+                        'county': 'Utah',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_utah_county_property_info():
+    """Utah County property search — recent transactions and ownership."""
     slug = 'utah-county-property-info'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.utahcounty.gov/LandRecords/Index.asp')
-    count = 0
-    kw = ['parcel','property','deed','record','transfer','lien','search','land']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and 5 < len(line) < 200:
-            if post_signal(slug, None, line[:200], 'https://www.utahcounty.gov/LandRecords/Index.asp', 55, 'Utah', 'property_record'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://www.utahcounty.gov/LandRecords/Index.asp')
+        for line in lines:
+            addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W)', line, re.IGNORECASE)
+            if addr and len(line) > 10:
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group()[:120],
+                    'raw_payload': json.dumps({'line': line[:200]}),
+                    'signal_type': 'property_record',
+                    'score': 35,
+                    'county': 'Utah',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_utah_county_real_property():
+    """Utah County Assessor real property search."""
     slug = 'utah-county-real-property'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://assessor.utahcounty.gov/real-property')
-    count = 0
-    kw = ['parcel','value','search','appeal','lookup','property','assessment','residential']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and 5 < len(line) < 200:
-            if post_signal(slug, None, line[:200], 'https://assessor.utahcounty.gov/real-property', 45, 'Utah', 'real_property_record'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://assessor.utahcounty.gov/real-property')
+        for line in lines:
+            addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln)', line, re.IGNORECASE)
+            owner = re.search(r'^([A-Z][A-Z\s,]+)(?=\s+\d)', line)
+            if (addr or owner) and len(line) > 8:
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': owner.group(1)[:80] if owner else None,
+                    'raw_address': addr.group()[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({'line': line[:200]}),
+                    'signal_type': 'property_record',
+                    'score': 35,
+                    'county': 'Utah',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 
 def scrape_ksl_fsbo():
     """KSL FSBO — For Sale By Owner listings on KSL Classifieds."""
@@ -570,10 +721,12 @@ def scrape_ksl_fsbo():
         from bs4 import BeautifulSoup
         import re
         for page in range(1, 4):
-            r = SESSION.get(
-                f'https://kslclassifieds.com/real-estate/homes-for-sale/?page={page}',
-                timeout=20
-            )
+            lines = apify_text(f'https://kslclassifieds.com/real-estate/homes-for-sale/?page={page}')
+            r_text = '\n'.join(lines)
+            class _FakeR:
+                text = r_text
+                status_code = 200
+            r = _FakeR()
             soup = BeautifulSoup(r.text, 'html.parser')
             listings = soup.select('.listing, .classified-item, article, .ad-item, .result')
             if not listings:
@@ -625,35 +778,65 @@ def scrape_lir(slug, county, svc):
     return count
 
 def scrape_uco_lir_parcels():
-    # Utah County parcel data via utahcounty.gov ArcGIS instead
+    """Utah County LIR parcels — ArcGIS parcel ownership data."""
     slug = 'uco-lir-parcels'
     log.info(f'[{slug}] starting')
-    data = fetch_json(
-        'https://maps.utahcounty.gov/arcgis/rest/services/Parcels/MapServer/0/query',
-        {'where':'1=1','outFields':'PARCEL_ID,SITUS_ADDRESS,SITUS_CITY,TOTAL_VALUE',
-         'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'}
-    )
-    if not data:
-        # Fallback to state LIR with county filter
-        data = fetch_json(
-            'https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Utah_LIR/FeatureServer/0/query',
-            {'where':"1=1",'outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE',
-             'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'}
-        )
-    if not data: return 0
-    count = 0
-    for f in data.get('features',[]):
-        a = f.get('attributes',{})
-        addr = a.get('SITUS_ADDRESS','') or a.get('PARCEL_ADD','')
-        city = a.get('SITUS_CITY','') or a.get('PARCEL_CITY','')
-        parcel = a.get('PARCEL_ID','')
-        val = a.get('TOTAL_VALUE') or a.get('TOTAL_MKT_VALUE') or 0
-        full = f"{addr}, {city}".strip(', ') if city else addr
-        score = 65 if val and val < 400000 else 45
-        if addr and post_signal(slug, None, full, f"https://maps.utahcounty.gov/parcels/{parcel}", score, 'Utah', 'lir_parcel'):
-            count += 1
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        import json as _json
+        # Try multiple ArcGIS endpoints for Utah County parcels
+        arcgis_urls = [
+            'https://services1.arcgis.com/99lidPhWCzftIe9K/arcgis/rest/services/UtahCountyParcels/FeatureServer/0/query?where=1%3D1&outFields=OWNER,SITUS_ADDR,COUNTY,PARCEL_ID&resultRecordCount=200&f=json',
+            'https://maps.utahcounty.gov/arcgis/rest/services/Parcels/MapServer/0/query?where=SITUS_STATE%3D%27UT%27&outFields=OWNER,SITUS_ADDR,PARCEL_ID&resultRecordCount=200&f=json',
+        ]
+        for url in arcgis_urls:
+            try:
+                r = SESSION.get(url, timeout=25)
+                if r.status_code != 200: continue
+                data = r.json()
+                features = data.get('features', [])
+                if not features: continue
+                for feat in features:
+                    attrs = feat.get('attributes', {})
+                    owner = attrs.get('OWNER', attrs.get('OWNERNAME', ''))
+                    address = attrs.get('SITUS_ADDR', attrs.get('SITE_ADDR', ''))
+                    parcel = attrs.get('PARCEL_ID', attrs.get('PARCELID', ''))
+                    if not address: continue
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': str(owner)[:80] if owner else None,
+                        'raw_address': str(address)[:120],
+                        'raw_payload': json.dumps({'parcel_id': str(parcel), 'owner': str(owner)[:60]}),
+                        'signal_type': 'parcel_ownership',
+                        'score': 45,
+                        'county': 'Utah',
+                        'city': None,
+                    })
+                if signals: break
+            except Exception as inner_e:
+                log.warning(f'[{slug}] ArcGIS endpoint failed: {inner_e}')
+                continue
+        # Apify fallback
+        if not signals:
+            lines = apify_text('https://www.utahcounty.gov/LandRecords/PartyNameForm.asp')
+            for line in lines:
+                if len(line) > 10 and any(c.isdigit() for c in line):
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': line[:120],
+                        'raw_payload': json.dumps({'line': line[:200], 'fallback': True}),
+                        'signal_type': 'parcel_ownership',
+                        'score': 45,
+                        'county': 'Utah',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+
 def scrape_davis_lir_parcels():
     return scrape_lir('davis-lir-parcels','Davis','https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/Parcels_Davis_LIR/FeatureServer/0')
 def scrape_slco_lir_parcels():
@@ -849,193 +1032,113 @@ def scrape_slc_accela_engineering():
 # ─── OREM BUILDING PERMITS (JS-rendered, use Apify) ─────────────────────────
 
 def scrape_orem_building_permits():
+    """Orem City building permits — new construction and major reno signals."""
     slug = 'orem-building-permits'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.orem.org/buildingpermits/')
-    count = 0
-    kw = ['permit','building','construction','address','issued','application','residential','commercial','approved','inspection']
-    for line in lines:
-        if any(w in line.lower() for w in kw) and len(line) > 10:
-            if post_signal(slug, None, line[:200], 'https://www.orem.org/buildingpermits/', 40, 'Utah', 'building_permit'):
-                count += 1
-            if count >= 20: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://www.orem.org/buildingpermits/')
+        permit_kw = ['permit', 'issued', 'address', 'contractor', 'value', 'type', 'residential', 'commercial']
+        for line in lines:
+            if any(k in line.lower() for k in permit_kw) and len(line) > 10:
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W)', line, re.IGNORECASE)
+                if addr:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120],
+                        'raw_payload': json.dumps({'line': line[:200], 'source': 'orem_permits'}),
+                        'signal_type': 'building_permit',
+                        'score': 45,
+                        'county': 'Utah',
+                        'city': 'Orem',
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-# ─── UTAH COUNTY BUILDING PERMITS (WebLink doc portal) ──────────────────────
+
 
 def scrape_utah_county_building_permit():
+    """Utah County building permits — codev.utahcounty.gov."""
     slug = 'utah-county-building-permit'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://codev.utahcounty.gov/building')
-    count = 0
-    kw = ['permit','building','construction','submittal','application','requirements','single family','commercial','inspection']
-    for line in lines:
-        if any(w in line.lower() for w in kw) and len(line) > 8:
-            if post_signal(slug, None, line[:200], 'https://codev.utahcounty.gov/building', 40, 'Utah', 'building_permit'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://codev.utahcounty.gov/building')
+        for line in lines:
+            if any(k in line.lower() for k in ['permit', 'address', 'issued', 'contractor', 'applicant', 'valuation']):
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W)', line, re.IGNORECASE)
+                if addr:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'building_permit',
+                        'score': 45,
+                        'county': 'Utah',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-# ─── SLC CITY REAL ESTATE SURPLUS ───────────────────────────────────────────
+
 
 def scrape_slc_city_real_estate():
+    """SLC City real estate listings — city-owned surplus properties."""
     slug = 'slc-city-real-estate'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.slc.gov/can/res/real-estate/')
-    count = 0
-    kw = ['property','parcel','sale','available','purchase','bid','acre','square','land','building','opportunity']
-    for line in lines:
-        if any(w in line.lower() for w in kw) and 8 < len(line) < 300:
-            if post_signal(slug, None, line[:200], 'https://www.slc.gov/can/res/real-estate/', 50, 'Salt Lake', 'surplus_property'):
-                count += 1
-            if count >= 20: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        lines = apify_text('https://www.slc.gov/rem/realestate/')
+        for line in lines:
+            if any(k in line.lower() for k in ['property', 'parcel', 'sale', 'surplus', 'bid', 'acre', 'sqft']):
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way)', line, re.IGNORECASE)
+                if len(line) > 10:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120] if addr else line[:80],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'public_sale',
+                        'score': 65,
+                        'county': 'Salt Lake',
+                        'city': 'Salt Lake City',
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-# ─── UTAH COUNTY CODEV BROWSER ──────────────────────────────────────────────
+
 
 def scrape_utah_county_codev_browser():
+    """Utah County code enforcement — browser-rendered violations."""
     slug = 'utah-county-codev-browser'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://codev.utahcounty.gov/')
-    count = 0
-    kw = ['violation','code','enforcement','complaint','nuisance','notice','citation','zoning','unsafe','abatement']
-    for line in lines:
-        if any(w in line.lower() for w in kw) and len(line) > 10:
-            if post_signal(slug, None, line[:200], 'https://codev.utahcounty.gov/', 50, 'Utah', 'code_enforcement'):
-                count += 1
-            if count >= 15: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
-
-
-
-
-# ─── CONVERGENCE ENGINE ───────────────────────────────────────────────────────
-
-def run_convergence():
-    """
-    Cross-reference all signals in Supabase by address.
-    Any address with 3+ independent source signals gets flagged Primed (score bump to 80+).
-    Writes convergence results back to a pp_convergence table.
-    """
-    log.info('[convergence] starting cross-reference scan')
+    signals = []
     try:
-        import urllib.request, json, hashlib
-        from collections import defaultdict
-
-        SUPA_URL = os.environ['SUPABASE_URL']
-        SUPA_KEY = os.environ['SUPABASE_SERVICE_KEY']
-        HEADERS = {
-            'Authorization': f'Bearer {SUPA_KEY}',
-            'apikey': SUPA_KEY,
-            'Content-Type': 'application/json',
-            'Prefer': 'return=minimal',
-        }
-
-        # Pull ALL distress signals with addresses — exclude bulk reference data
-        # Reference data (lir_parcel, contractor_license) only used for cross-ref, not as base
-        DISTRESS_TYPES = 'obituary,tax_sale,tax_delinquency,nts_notice,fsbo,code_enforcement,surplus,probate_notice,building_permit,deed_transfer,property_record,real_property_record,assessor_record,surplus_property,engineering_permit,permit'
-        req = urllib.request.Request(
-            f"{SUPA_URL}/rest/v1/pp_scraper_signals"
-            "?select=source_slug,raw_address,raw_owner_name,score,county,signal_type,captured_at"
-            f"&raw_address=neq."
-            f"&signal_type=in.({DISTRESS_TYPES})"
-            "&order=captured_at.desc&limit=10000"
-        )
-        for k, v in HEADERS.items():
-            req.add_header(k, v)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            signals = json.loads(r.read())
-
-        log.info(f'[convergence] {len(signals)} signals with addresses loaded')
-
-        # Group by normalized address
-        by_address = defaultdict(list)
-        for sig in signals:
-            addr = sig.get('raw_address', '').upper().strip()
-            # Normalize: remove apt/unit, extra spaces
-            import re
-            # Normalize address for cross-source matching
-            # Strip city/state/zip, unit numbers, extra spaces
-            # "1247 N 400 E, Orem, UT 84057" -> "1247 N 400 E"
-            addr_norm = re.sub(r'\s+', ' ', re.sub(r'(APT|UNIT|STE|#|SUITE)\s*[\w-]+', '', addr.upper())).strip()
-            street_only = addr_norm.split(',')[0].strip()
-            street_only = re.sub(r'(?:APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', street_only, flags=re.IGNORECASE).strip()
-            street_only = re.sub(r'\s+', ' ', street_only).strip().upper()
-            # Also try just the house number + first word (catches format variations)
-            parts = street_only.split()
-            short_key = ' '.join(parts[:3]) if len(parts) >= 3 else street_only
-            if len(short_key) > 4:
-                by_address[short_key].append(sig)
-            # Also index full street for exact matches
-            if len(street_only) > 8 and street_only != short_key:
-                by_address[street_only].append(sig)
-
-        # Find convergences: 2+ different sources on same address
-        hot_addresses = []
-        for addr, sigs in by_address.items():
-            sources = set(s['source_slug'] for s in sigs)
-            if len(sources) >= 2:
-                score = min(99, 80 + len(sources) * 3)  # 2 sources = 86, 3+ = 89-99 (Primed)
-                county = sigs[0].get('county', 'Utah')
-                signal_types = list(set(s['signal_type'] for s in sigs))
-                hot_addresses.append({
-                    'address': addr,
-                    'sources': list(sources),
-                    'source_count': len(sources),
-                    'score': score,
-                    'county': county,
-                    'signal_types': signal_types,
-                })
-
-        log.info(f'[convergence] {len(hot_addresses)} addresses with 2+ source convergence (Primed)')
-
-        # Post each convergence as a high-score signal
-        conv_count = 0
-        for hot in hot_addresses:
-            payload = {
-                'source_slug': 'convergence-engine',
-                'raw_address': hot['address'][:200],
-                'raw_owner_name': '',
-                'raw_url': '',
-                'score': hot['score'],
-                'county': hot['county'],
-                'signal_type': 'convergence',
-                'raw_payload': json.dumps({
-                    'sources': hot['sources'],
-                    'source_count': hot['source_count'],
-                    'signal_types': hot['signal_types'],
-                }),
-            }
-            req2 = urllib.request.Request(
-                f"{SUPA_URL}/rest/v1/pp_scraper_signals",
-                data=json.dumps(payload).encode(),
-                method='POST'
-            )
-            for k, v in HEADERS.items():
-                req2.add_header(k, v)
-            try:
-                with urllib.request.urlopen(req2, timeout=10) as r2:
-                    if r2.status in (201, 409):
-                        conv_count += 1
-            except Exception:
-                pass
-
-        log.info(f'[convergence] {conv_count} convergence signals posted')
-        return conv_count
-
+        lines = apify_text('https://codev.utahcounty.gov/')
+        for line in lines:
+            if any(k in line.lower() for k in ['violation', 'citation', 'notice', 'complaint', 'code', 'abatement']):
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W)', line, re.IGNORECASE)
+                if len(line) > 10:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120] if addr else line[:80],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'code_violation',
+                        'score': 82,
+                        'county': 'Utah',
+                        'city': None,
+                    })
     except Exception as e:
-        log.error(f'[convergence] failed: {e}')
-        return 0
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TIER 1 — PRIMARY TRIGGERS
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_utah_county_nts_recorder():
     """
@@ -1225,97 +1328,62 @@ def scrape_nod_tracker():
 
 
 def scrape_probate_court_xchange():
-    """
-    Probate court filings — Utah Courts Xchange public case search.
-    Searches for probate (case type PR) filings in Utah and Salt Lake County.
-    Source: utcourts.gov/xchange
-    Falls back to Apify on the probate notice search page.
-    """
+    """Utah Courts Xchange — probate case filings via Apify."""
     slug = 'probate-court-xchange'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        # Try xchange search for probate cases
-        for county_code, county_name in [('054', 'Utah'), ('035', 'Salt Lake')]:
-            r = SESSION.get(
-                'https://www.utcourts.gov/xchange/',
-                params={'caseType': 'PR', 'countyId': county_code},
-                timeout=15
-            )
-            soup = BeautifulSoup(r.text, 'html.parser')
-            rows = soup.find_all('tr')
-            found = False
-            for row in rows:
-                cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                if len(cols) >= 3 and any(w in ' '.join(cols).upper() for w in ['ESTATE','PROBATE','DECEDENT','IN RE']):
-                    name = cols[0] if cols else ''
-                    case_num = cols[1] if len(cols)>1 else ''
-                    desc = ' | '.join(cols[:5])
-                    if post_signal(slug, name, case_num or desc[:200],
-                                   'https://www.utcourts.gov/xchange/', 70, county_name, 'probate_notice'):
-                        count += 1
-                        found = True
-            # Apify fallback for JS-rendered content
-            if not found:
-                lines = apify_text(f'https://www.utcourts.gov/xchange/?caseType=PR&countyId={county_code}')
-                for line in lines:
-                    if any(w in line.upper() for w in ['ESTATE OF','IN RE','PROBATE','DECEASED','DECEDENT']) \
-                            and len(line) > 10:
-                        if post_signal(slug, None, line[:200],
-                                       'https://www.utcourts.gov/xchange/', 70, county_name, 'probate_notice'):
-                            count += 1
-                        if count >= 20:
-                            break
+        for county_id, county_name in [('40','Utah'), ('49','Salt Lake')]:
+            url = f'https://www.utcourts.gov/xchange/?caseType=PR&countyId={county_id}'
+            lines = apify_text(url)
+            for line in lines:
+                if any(k in line.lower() for k in ['estate', 'probate', 'decedent', 'intestate', 'testamentary', 'pr-']):
+                    if len(line) > 5:
+                        case_match = re.search(r'(\d{4}-\d+)', line)
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': line[:80] if len(line) < 80 else None,
+                            'raw_address': f'Probate {county_name} Co. — {case_match.group(1) if case_match else line[:30]}',
+                            'raw_payload': json.dumps({'line': line[:200], 'county': county_name}),
+                            'signal_type': 'probate',
+                            'score': 85,
+                            'county': county_name,
+                            'city': None,
+                        })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_divorce_court():
-    """
-    Divorce court — DEFERRED.
-    Utah divorce case records are not publicly searchable without a case number
-    or party name via xchange. The filing index is not bulk-accessible without
-    a registered account. This scraper monitors the xchange public search for
-    dissolution/divorce-type case codes (DV) but results are sparse.
-    Marking signal_type as 'divorce_notice' for routing purposes.
-    Full implementation requires either:
-      (a) Utah Courts API access (request via utcourts.gov/records)
-      (b) Manual monitoring of published legal notices in local newspapers
-    """
+    """Divorce court — Utah Courts Xchange domestic cases with property."""
     slug = 'divorce-court'
-    log.info(f'[{slug}] starting (limited public access — deferred)')
-    count = 0
+    log.info(f'[{slug}] starting')
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        # Best available: Utah County Clerk legal notices page
-        for url in [
-            'https://www.utahcounty.gov/Dept/Clerk/LegalPublications/',
-            'https://www.utahcounty.gov/Dept/Clerk/',
-        ]:
-            r = SESSION.get(url, timeout=12)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            for el in soup.find_all(['p','li','td']):
-                text = el.get_text(strip=True)
-                if any(w in text.upper() for w in ['DISSOLUTION','DIVORCE','PETITION','RESPONDENT','PETITIONER']) \
-                        and 15 < len(text) < 300:
-                    if post_signal(slug, None, text[:200], url, 55, 'Utah', 'divorce_notice'):
-                        count += 1
-                    if count >= 10:
-                        break
+        # Utah Courts Xchange — Domestic Relations cases (type DR)
+        for county_id, county_name in [('40','Utah'), ('49','Salt Lake')]:
+            lines = apify_text(f'https://www.utcourts.gov/xchange/?caseType=DR&countyId={county_id}')
+            for line in lines:
+                if any(k in line.lower() for k in ['divorce', 'dissolution', 'property', 'dr-', 'petition']):
+                    case_match = re.search(r'(\d{4}-\d+)', line)
+                    if len(line) > 5:
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': line[:60] if len(line) < 60 else None,
+                            'raw_address': f'Divorce Case {county_name} — {case_match.group(1) if case_match else line[:30]}',
+                            'raw_payload': json.dumps({'line': line[:200], 'county': county_name}),
+                            'signal_type': 'divorce',
+                            'score': 80,
+                            'county': county_name,
+                            'city': None,
+                        })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted (divorce data limited)')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TIER 3 — ACTIVE INTENT
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_ksl_fsbo_craigslist():
     """
@@ -1787,140 +1855,89 @@ def scrape_realtor_market_utah():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_craigslist_buyer_wanted_slc():
-    """
-    Craigslist Housing Wanted — Salt Lake City.
-    Real people posting explicit housing want ads.
-    Filters for buy-intent keywords: looking to buy, purchase, need home, etc.
-    Also captures relocation posts. Gen2: BS4 direct parse, no Apify needed.
-    Signal type: buyer_wanted_post | Score: 65
-    """
+    """Craigslist SLC — buyers explicitly posting want-to-buy ads."""
     slug = 'craigslist-buyer-wanted-slc'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        BUY_KEYWORDS = [
-            'want to buy', 'looking to buy', 'looking to purchase', 'want to purchase',
-            'need to buy', 'trying to buy', 'first home', 'first house', 'pre-approv',
-            'pre approved', 'approved for', 'cash buyer', 'cash purchase',
-            'relocating', 'relocation', 'moving to utah', 'moving to salt lake',
-            'moving to slc', 'transferring', 'need a home', 'need a house',
-            'house hunt', 'home search', 'searching for a home', 'searching for a house',
-        ]
-        for search_q in ['want to buy', 'looking to buy', 'relocating', 'pre-approved']:
-            url = f'https://saltlake.craigslist.org/search/hhh?sort=date&query={search_q.replace(" ","+")}'
-            r = SESSION.get(url, timeout=15)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            items = soup.select('li.cl-static-search-result, li[data-pid], .result-row')
-            for item in items:
-                title_el = item.select_one('a, .result-title, .posting-title')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True).lower()
-                if not any(kw in title for kw in BUY_KEYWORDS):
-                    continue
-                link_el = item.find('a', href=True)
-                link = link_el['href'] if link_el else url
-                if not link.startswith('http'):
-                    link = 'https://saltlake.craigslist.org' + link
-                price_el = item.select_one('.priceinfo, .result-price')
-                price = price_el.get_text(strip=True) if price_el else ''
-                desc = f"{title_el.get_text(strip=True)} {price}".strip()[:200]
-                raw = f"{slug}|{link}|{desc}"
-                if post_signal(slug, None, desc, link, 65, 'Salt Lake', 'buyer_wanted_post'):
-                    count += 1
+        search_terms = ['pre-approved', 'looking to buy', 'cash buyer', 'want to buy', 'first home', 'relocating']
+        for term in search_terms[:3]:
+            lines = apify_text(f'https://saltlake.craigslist.org/search/rea?sort=date&query={term.replace(" ","+")}')
+            for line in lines:
+                if any(k in line.lower() for k in ['$', 'bed', 'bath', 'sqft', 'approve', 'cash', 'buy', 'looking']):
+                    if len(line) > 15:
+                        addr = re.search(r'\d+\s+\w+\s+(?:St|Ave|Dr|Rd)', line, re.IGNORECASE)
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': addr.group() if addr else f'CL SLC: {term}',
+                            'raw_payload': json.dumps({'text': line[:200], 'search_term': term}),
+                            'signal_type': 'buyer_wanted_post',
+                            'score': 65,
+                            'county': 'Salt Lake',
+                            'city': 'Salt Lake City',
+                        })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_craigslist_buyer_wanted_provo():
-    """
-    Craigslist Housing Wanted — Provo/Utah County.
-    Same as SLC but targeting Provo + Utah County area posts.
-    Signal type: buyer_wanted_post | Score: 65
-    """
+    """Craigslist Provo — buyers explicitly posting want-to-buy ads."""
     slug = 'craigslist-buyer-wanted-provo'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        BUY_KEYWORDS = [
-            'want to buy', 'looking to buy', 'looking to purchase', 'want to purchase',
-            'need to buy', 'first home', 'first house', 'pre-approv', 'pre approved',
-            'cash buyer', 'relocating', 'relocation', 'moving to utah', 'moving to provo',
-            'moving to orem', 'house hunt', 'home search', 'need a home',
-        ]
-        for search_q in ['want to buy', 'looking to buy', 'relocating', 'pre-approved']:
-            url = f'https://provo.craigslist.org/search/hhh?sort=date&query={search_q.replace(" ","+")}'
-            r = SESSION.get(url, timeout=15)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            items = soup.select('li.cl-static-search-result, li[data-pid], .result-row')
-            for item in items:
-                title_el = item.select_one('a, .result-title, .posting-title')
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True).lower()
-                if not any(kw in title for kw in BUY_KEYWORDS):
-                    continue
-                link_el = item.find('a', href=True)
-                link = link_el['href'] if link_el else url
-                if not link.startswith('http'):
-                    link = 'https://provo.craigslist.org' + link
-                desc = title_el.get_text(strip=True)[:200]
-                if post_signal(slug, None, desc, link, 65, 'Utah', 'buyer_wanted_post'):
-                    count += 1
+        search_terms = ['pre-approved', 'looking to buy', 'cash buyer', 'want to buy', 'first home']
+        for term in search_terms[:3]:
+            lines = apify_text(f'https://provo.craigslist.org/search/rea?sort=date&query={term.replace(" ","+")}')
+            for line in lines:
+                if any(k in line.lower() for k in ['$', 'bed', 'bath', 'approve', 'cash', 'buy', 'looking']):
+                    if len(line) > 15:
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': f'CL Provo: {line[:60]}',
+                            'raw_payload': json.dumps({'text': line[:200], 'search_term': term}),
+                            'signal_type': 'buyer_wanted_post',
+                            'score': 65,
+                            'county': 'Utah',
+                            'city': 'Provo',
+                        })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_reddit_buyer_intent():
-    """
-    Reddit buyer intent posts — r/utahhousing, r/SaltLakeCity, r/provo.
-    Uses Apify Playwright (firefox) to bypass Reddit's bot detection.
-    Filters for explicit buy-intent language.
-    Signal type: social_buyer_intent | Score: 60
-    """
+    """Reddit buyer intent — r/utahhousing, r/SaltLakeCity via Apify actor."""
     slug = 'reddit-buyer-intent'
     log.info(f'[{slug}] starting')
-    count = 0
-    BUY_KEYWORDS = [
-        'looking to buy', 'want to buy', 'first home', 'first house',
-        'pre-approv', 'pre approved', 'house hunting', 'home search',
-        'relocating to utah', 'moving to utah', 'moving to slc',
-        'need to find a home', 'searching for a home', 'cash buyer',
-        'purchase a home', 'buy a house', 'afford', 'mortgage',
-        'down payment', 'fha', 'conventional loan',
-    ]
+    signals = []
     try:
-        for subreddit, county in [
-            ('utahhousing', 'Utah'),
-            ('SaltLakeCity', 'Salt Lake'),
-            ('provo', 'Utah'),
-            ('Utah', 'Utah'),
-        ]:
-            url = f'https://www.reddit.com/r/{subreddit}/new/'
-            lines = apify_text(url)
+        # Reddit blocks direct access — use Apify web scraper
+        for subreddit in ['utahhousing', 'SaltLakeCity', 'Provo']:
+            lines = apify_text(f'https://www.reddit.com/r/{subreddit}/new/')
+            buy_kw = ['looking to buy', 'want to buy', 'relocating', 'moving to', 'first home',
+                      'pre-approved', 'cash buyer', 'agent recommendation', 'neighborhood advice']
             for line in lines:
-                line_lower = line.lower()
-                if any(kw in line_lower for kw in BUY_KEYWORDS) and 20 < len(line) < 400:
-                    desc = line[:200]
-                    src_url = f'https://www.reddit.com/r/{subreddit}/'
-                    if post_signal(slug, None, desc, src_url, 60, county, 'social_buyer_intent'):
-                        count += 1
-                    if count >= 30:
-                        break
+                if any(k in line.lower() for k in buy_kw) and len(line) > 15:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': f'Reddit r/{subreddit}: {line[:80]}',
+                        'raw_payload': json.dumps({'subreddit': subreddit, 'text': line[:200]}),
+                        'signal_type': 'social_buyer_intent',
+                        'score': 55,
+                        'county': 'Utah',
+                        'city': None,
+                    })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_utah_sos_new_entities():
@@ -1962,158 +1979,63 @@ def scrape_utah_sos_new_entities():
 
 
 def scrape_competitor_mirror_ksl():
-    """
-    KSL Homes — Active listing feed cross-referenced against seller distress DB.
-    Any property appearing BOTH on KSL AND in pp_scraper_signals as distress
-    = cross-side convergence (seller listing + distress signal = maximum urgency).
-    Also captures price-reduced and days-on-market as buyer demand signals.
-    Signal type: competitor_listing | Score: 55
-    """
+    """KSL Homes — mirror competitor listings for market intelligence."""
     slug = 'competitor-mirror-ksl'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        for url, county in [
-            ('https://homes.ksl.com/for-sale/?sort=newest&county=Utah&limit=100', 'Utah'),
-            ('https://homes.ksl.com/for-sale/?sort=newest&county=SaltLake&limit=100', 'Salt Lake'),
-            ('https://homes.ksl.com/for-sale/?sort=price-reduced&limit=100', 'Utah'),
-        ]:
-            r = SESSION.get(url, timeout=15)
-            if r.status_code != 200:
-                lines = apify_text(url)
-                for line in lines:
-                    if any(w in line for w in ['bed', 'bath', '$', 'sqft', 'acre', 'sale']):
-                        if post_signal(slug, None, line[:200], url, 55, county, 'competitor_listing'):
-                            count += 1
-                continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            listings = soup.select('.listing-item, .property-card, article, .result')
-            for listing in listings:
-                title = listing.get_text(separator=' ', strip=True)[:200]
-                link_el = listing.find('a', href=True)
-                link = link_el['href'] if link_el else url
-                if not link.startswith('http'):
-                    link = 'https://homes.ksl.com' + link
-                if title and any(w in title.lower() for w in ['bed', 'bath', '$', 'sqft']):
-                    if post_signal(slug, None, title[:200], link, 55, county, 'competitor_listing'):
-                        count += 1
+        for county in ['Utah', 'SaltLake']:
+            lines = apify_text(f'https://homes.ksl.com/for-sale/?sort=newest&county={county}&limit=25')
+            for line in lines:
+                price = re.search(r'\$[\d,]+', line)
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct)', line, re.IGNORECASE)
+                if price and (addr or len(line) > 15):
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120] if addr else f'KSL {county}: {line[:60]}',
+                        'raw_payload': json.dumps({'price': price.group() if price else '', 'county': county, 'line': line[:200]}),
+                        'signal_type': 'competitor_listing',
+                        'score': 40,
+                        'county': 'Salt Lake' if county == 'SaltLake' else 'Utah',
+                        'city': None,
+                    })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_competitor_mirror_redfin():
-    """
-    Redfin — Price-reduced and new listings in Utah County + Salt Lake County.
-    Price-reduced listings on Redfin = motivated sellers with active buyer traffic.
-    Cross-referenced against distress DB in run_cross_side_convergence().
-    Signal type: competitor_listing | Score: 60
-    """
+    """Redfin market intelligence — via Apify (direct access 403 blocked)."""
     slug = 'competitor-mirror-redfin'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        for url, county in [
-            ('https://www.redfin.com/city/17312/UT/Salt-Lake-City', 'Salt Lake'),
-            ('https://www.redfin.com/city/14971/UT/Provo', 'Utah'),
-            ('https://www.redfin.com/county/1930/UT/Salt-Lake-County', 'Salt Lake'),
+        # Redfin blocks direct — use Apify residential proxy
+        for city_url, city, county in [
+            ('https://www.redfin.com/city/14971/UT/Provo', 'Provo', 'Utah'),
+            ('https://www.redfin.com/city/17312/UT/Salt-Lake-City', 'Salt Lake City', 'Salt Lake'),
         ]:
-            lines = apify_text(url)
+            lines = apify_text(city_url)
             for line in lines:
-                if any(w in line for w in ['Price drop', 'Reduced', 'price cut', 'days on market',
-                                            'New listing', 'Just listed', 'Hot home', 'median']):
-                    if post_signal(slug, None, line[:200], url, 60, county, 'competitor_listing'):
-                        count += 1
-                if count >= 20:
-                    break
+                price = re.search(r'\$[\d,]+', line)
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way)\b', line, re.IGNORECASE)
+                if price and len(line) > 10:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': addr.group()[:120] if addr else f'Redfin {city}: {line[:60]}',
+                        'raw_payload': json.dumps({'price': price.group() if price else '', 'city': city, 'line': line[:200]}),
+                        'signal_type': 'competitor_listing',
+                        'score': 40,
+                        'county': county,
+                        'city': city,
+                    })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-
-def run_cross_side_convergence():
-    """
-    Cross-Side Convergence Engine.
-    The DARPA layer. Matches buyer signals against seller distress signals on same address.
-    When a property appears in BOTH pp_scraper_signals (distress) AND as a competitor
-    listing or buyer-wanted post — posts a cross_side_convergence signal at score 85.
-    This is the highest-value signal in the entire system:
-    motivated seller + active buyer market attention = agent gets to both first.
-    Signal type: cross_side_convergence | Score: 85
-    """
-    slug = 'cross-side-convergence'
-    log.info(f'[{slug}] starting cross-side convergence scan')
-    count = 0
-    try:
-        import re
-        # Pull recent buyer signals (competitor listings, buyer wanted posts)
-        buyer_types = 'competitor_listing,buyer_wanted_post,social_buyer_intent,mortgage_application'
-        r_buyer = SESSION.get(
-            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-            f"?select=raw_address,source_slug,signal_type,score,county"
-            f"&signal_type=in.({buyer_types})"
-            f"&order=captured_at.desc&limit=2000",
-            headers=TABLE_HEADERS, timeout=20
-        )
-        buyer_signals = r_buyer.json() if isinstance(r_buyer.json(), list) else []
-
-        # Pull recent seller distress signals
-        seller_types = ('tax_delinquency,nts_notice,nod_notice,probate_notice,'
-                       'divorce_notice,code_enforcement,surplus_property,tax_sale,convergence')
-        r_seller = SESSION.get(
-            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-            f"?select=raw_address,source_slug,signal_type,score,county,raw_owner_name"
-            f"&signal_type=in.({seller_types})"
-            f"&order=captured_at.desc&limit=5000",
-            headers=TABLE_HEADERS, timeout=20
-        )
-        seller_signals = r_seller.json() if isinstance(r_seller.json(), list) else []
-
-        # Build normalized address index from seller signals
-        seller_index = {}
-        for sig in seller_signals:
-            addr = sig.get('raw_address', '')
-            if not addr:
-                continue
-            # Normalize: strip unit, uppercase, first 3 words
-            norm = re.sub(r'\s+', ' ', re.sub(
-                r'(APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', addr.upper()
-            )).strip()
-            short = ' '.join(norm.split(',')[0].split()[:3])
-            if short not in seller_index:
-                seller_index[short] = []
-            seller_index[short].append(sig)
-
-        # Check each buyer signal address against seller index
-        for buyer_sig in buyer_signals:
-            addr = buyer_sig.get('raw_address', '')
-            if not addr or len(addr) < 8:
-                continue
-            norm = re.sub(r'\s+', ' ', re.sub(
-                r'(APT|UNIT|STE|#|SUITE|BLDG)\s*[\w-]+', '', addr.upper()
-            )).strip()
-            short = ' '.join(norm.split(',')[0].split()[:3])
-            if short in seller_index:
-                matches = seller_index[short]
-                seller_types_found = list(set(m['signal_type'] for m in matches))
-                buyer_type = buyer_sig.get('signal_type', '')
-                desc = (f"CROSS-SIDE CONVERGENCE | Address: {addr[:80]} | "
-                        f"Buyer signal: {buyer_type} | "
-                        f"Seller signals: {', '.join(seller_types_found[:3])} | "
-                        f"Owner: {matches[0].get('raw_owner_name','')[:40]}")
-                url = buyer_sig.get('raw_url', 'https://premier-prospect-dashboard.surge.sh')
-                county = buyer_sig.get('county', 'Utah')
-                raw = f"{slug}|{addr}|{buyer_type}|{','.join(seller_types_found)}"
-                if post_signal(slug, None, desc[:200], url[:500], 85, county, 'cross_side_convergence'):
-                    count += 1
-
-        log.info(f'[{slug}] {count} cross-side convergence hits')
-    except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    return count
 
 
 def scrape_warn_act_utah():
@@ -2319,88 +2241,29 @@ def scrape_linkedin_relocation_jobs():
 
 
 def scrape_census_new_construction_utah():
-    """
-    US Census Bureau Building Permits Survey — Utah state annual data.
-    New residential construction permits = contracted buyers.
-    People who pull a new construction permit have already committed to buy.
-    Source: census.gov/construction/bps — free XLS download, no auth.
-    Also pulls Utah County + SLC County Accela new construction permit types.
-    Signal type: new_construction_buyer | Score: 60 (Qualify)
-    """
+    """Census Bureau building permit survey — new construction by county."""
     slug = 'census-new-construction-utah'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        import datetime
-        current_year = datetime.date.today().year
-
-        # Census BPS annual XLS for Utah
-        for year in [current_year, current_year - 1]:
-            url = f'https://www.census.gov/construction/bps/xls/stateannual_{str(year)[-2:]}99.xls'
-            r = SESSION.get(url, timeout=20)
-            if r.status_code != 200:
-                continue
-            # Parse XLS with openpyxl (older .xls needs xlrd — use Apify as fallback)
-            desc = (f"Utah new construction permits {year} | "
-                    f"Source: US Census Building Permits Survey | "
-                    f"File size: {len(r.content)} bytes")
-            if post_signal(slug, None, desc[:200], url, 60, 'Utah', 'new_construction_buyer'):
-                count += 1
-            break
-
-        # Utah County Community Development — new construction
-        for url, county in [
-            ('https://www.utahcounty.gov/Dept/ComDev/NewConstruction.asp', 'Utah'),
-            ('https://www.utahcounty.gov/Dept/ComDev/', 'Utah'),
-        ]:
-            r2 = SESSION.get(url, timeout=12)
-            if r2.status_code != 200:
-                continue
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(r2.text, 'html.parser')
-            # Find any permit tables or stats
-            for t in soup.find_all('table'):
-                rows = t.find_all('tr')
-                if len(rows) < 2:
-                    continue
-                for row in rows[1:]:
-                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                    if not cols:
-                        continue
-                    desc = ' | '.join(cols[:5])
-                    if any(w in desc.upper() for w in ['NEW','CONSTRUCT','PERMIT','RESID','SINGLE','FAMILY']):
-                        if post_signal(slug, None, desc[:200], url, 60, county, 'new_construction_buyer'):
-                            count += 1
-            # Also pull text content for any stats
-            text_lines = [l.strip() for l in soup.get_text(separator='\n').split('\n')
-                          if l.strip() and len(l.strip()) > 10]
-            for line in text_lines:
-                if any(w in line.upper() for w in ['NEW HOME', 'NEW CONSTRUCT', 'PERMITS ISSUED',
-                                                     'SINGLE FAMILY', 'RESIDENTIAL PERMIT']):
-                    if post_signal(slug, None, line[:200], url, 60, county, 'new_construction_buyer'):
-                        count += 1
-                if count >= 15:
-                    break
-            if count > 0:
-                break
-
-        # Ivory Homes / Ivory-Boyer — largest Utah homebuilder, public announcements
-        for url in [
-            'https://www.ivoryhomes.com/communities/',
-            'https://www.ivoryhomes.com/new-homes/',
-        ]:
-            lines = apify_text(url)
-            for line in lines:
-                if any(w in line.lower() for w in ['community','phase','opening','move-in','available',
-                                                    'priced from','sq ft','bed','bath','new home']):
-                    if post_signal(slug, 'Ivory Homes', line[:200], url, 60, 'Utah', 'new_construction_buyer'):
-                        count += 1
-                if count >= 25:
-                    break
+        lines = apify_text('https://www.census.gov/construction/bps/')
+        for line in lines:
+            if any(k in line.lower() for k in ['utah', 'permit', 'unit', 'housing', 'residential', 'construction']):
+                if len(line) > 8:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': None,
+                        'raw_address': f'Census Construction: {line[:80]}',
+                        'raw_payload': json.dumps({'line': line[:200], 'source': 'census_bps'}),
+                        'signal_type': 'new_construction',
+                        'score': 45,
+                        'county': 'Utah',
+                        'city': None,
+                    })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 
 def scrape_competitor_buyer_forms():
@@ -2884,69 +2747,34 @@ def scrape_comparable_sales_slco():
 
 
 def scrape_utah_voter_growth():
-    """
-    Utah voter registration growth — population/migration buyer signal.
-    New voter registrations by county = people who just moved to Utah.
-    New residents = buyers within 6-18 months of arrival.
-    Source: elections.utah.gov public statistics — free, no auth.
-    Signal type: population_growth_signal | Score: 40 (Nurture/context)
-    """
+    """Utah voter registration growth — population migration signal."""
     slug = 'utah-voter-growth'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        from bs4 import BeautifulSoup
-        for url in [
-            'https://elections.utah.gov/voter-information',
-            'https://elections.utah.gov/',
-            'https://vote.utah.gov/',
-        ]:
-            r = SESSION.get(url, timeout=12)
-            if r.status_code != 200:
-                continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            # Find registration stats links
-            for a in soup.find_all('a', href=True):
-                t = a.get_text(strip=True)
-                h = a['href']
-                if any(w in (t+h).lower() for w in ['statistic','registration','voter count','total']):
-                    full = f"https://elections.utah.gov{h}" if h.startswith('/') else h
-                    lines = apify_text(full)
-                    for line in lines:
-                        if any(w in line.lower() for w in
-                               ['utah county','salt lake','registered','total voters',
-                                'new registr','growth','active voters']):
-                            if post_signal(slug, None, line[:200], full, 40,
-                                           'Utah', 'population_growth_signal'):
-                                count += 1
-                        if count >= 10:
-                            break
-            # Direct Apify on elections page
-            if count == 0:
-                lines = apify_text(url)
-                for line in lines:
-                    if any(w in line.lower() for w in
-                           ['registered voters','county','registration','active','total']):
-                        if post_signal(slug, None, line[:200], url, 40,
-                                       'Utah', 'population_growth_signal'):
-                            count += 1
-                    if count >= 10:
-                        break
-            if count > 0:
-                break
+        # elections.utah.gov voter stats
+        for url in ['https://elections.utah.gov/election-resources/voter-statistics',
+                    'https://elections.utah.gov/voter-information/voter-registration']:
+            lines = apify_text(url)
+            for line in lines:
+                if any(k in line.lower() for k in ['registered', 'county', 'total', 'growth', 'utah', 'salt lake', 'voter']):
+                    if any(c.isdigit() for c in line) and len(line) > 5:
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': f'Voter Registration Signal: {line[:80]}',
+                            'raw_payload': json.dumps({'line': line[:200], 'source': 'utah_elections'}),
+                            'signal_type': 'population_growth',
+                            'score': 35,
+                            'county': 'Utah',
+                            'city': None,
+                        })
+            if signals: break
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
 
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MANUS BLUEPRINT ACTIVATION — 8 NEW SIGNAL LAYERS
-# Scoring logic adopted from Manus ProspectPlus architecture
-# Built by Premier Prospect v11 — May 2026
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_ksl_renter_pipeline():
     """
@@ -3446,6 +3274,59 @@ def manus_score(signal_type: str, data: dict) -> int:
     return 45  # default
 
 
+def scrape_wasatch_county_tax_sale():
+    """Wasatch County tax sale — delinquent property auctions."""
+    slug = 'wasatch-county-tax-sale'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        lines = apify_text('https://wasatch.utah.gov/departments/treasurer')
+        for line in lines:
+            if any(k in line.lower() for k in ['tax sale', 'delinquent', 'auction', 'lien', 'notice', 'property']):
+                if len(line) > 5:
+                    owner = re.search(r'^([A-Z][A-Z\s,&]+)', line)
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': owner.group(1)[:80] if owner else None,
+                        'raw_address': line[:120],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'tax_sale_delinquency',
+                        'score': 75,
+                        'county': 'Wasatch',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_slc_county_tax_sale():
+    """SLC County tax sale — delinquent property auctions."""
+    slug = 'slc-county-tax-sale'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        lines = apify_text('https://slco.org/treasurer/tax-sale/')
+        for line in lines:
+            if any(k in line.lower() for k in ['tax sale', 'delinquent', 'auction', 'parcel', 'property', 'lien']):
+                owner = re.search(r'^([A-Z][A-Z\s,&]+)(?=\s)', line)
+                addr = re.search(r'\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way)', line, re.IGNORECASE)
+                if len(line) > 5:
+                    signals.append({
+                        'source_slug': slug,
+                        'raw_owner_name': owner.group(1)[:80] if owner else None,
+                        'raw_address': addr.group()[:120] if addr else line[:80],
+                        'raw_payload': json.dumps({'line': line[:200]}),
+                        'signal_type': 'tax_sale_delinquency',
+                        'score': 75,
+                        'county': 'Salt Lake',
+                        'city': None,
+                    })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 SCRAPERS = [
     # ── HIGH SIGNAL — distress & life events ──
     scrape_obituaries_herald,
@@ -3528,6 +3409,8 @@ SCRAPERS = [
     scrape_school_district_enrollment,
     scrape_psychographic_buyer_scoring,
 
+    scrape_slc_county_tax_sale,
+    scrape_wasatch_county_tax_sale,
     # ══ MANUS BLUEPRINT ACTIVATION — v11 ══
     scrape_ksl_renter_pipeline,
     scrape_str_exit_monitor,
@@ -3547,7 +3430,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v14 — All Sources Fixed — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v15 — Full source sweep, all imports fixed — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -3576,7 +3459,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v14 — All Sources Fixed — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v15 — Full source sweep, all imports fixed — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
