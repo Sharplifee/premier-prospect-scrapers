@@ -22,6 +22,7 @@ TABLE_HEADERS = {
 }
 SESSION = requests.Session()
 SESSION.headers['User-Agent'] = 'PremierProspect/6.0'
+UA = 'PremierProspect/6.0'  # alias used by v11 scrapers
 
 MONTHS = ['January','February','March','April','May','June','July',
           'August','September','October','November','December']
