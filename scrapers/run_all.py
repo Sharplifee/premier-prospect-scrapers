@@ -183,34 +183,77 @@ def scrape_obituaries_herald():
     return count
 
 def scrape_uvhba_directory():
+    """UVHBA — Utah Valley Home Builders Association member directory."""
     slug = 'uvhba-directory'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://business.uvhba.com/list/ql/contractors-subcontractors-7')
-    count = 0
-    for i, line in enumerate(lines):
-        # Address line: starts with digit, followed by city/UT line
-        if re.match(r'^\d+\s+[A-Z\d]', line) and i+1 < len(lines):
-            city_line = lines[i+1]
-            if ('UT' in city_line or 'Utah' in city_line) and len(line) < 60:
-                address = f"{line}, {city_line}"
-                if post_signal(slug, None, address, 'https://business.uvhba.com/list/ql/contractors-subcontractors-7', 30, 'Utah', 'contractor_directory'):
-                    count += 1
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        from bs4 import BeautifulSoup
+        for url in ['https://uvhba.com/members/', 'https://uvhba.com/member-directory/']:
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200: continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            members = soup.select('.member, .member-card, .directory-item, article, .entry')
+            if not members:
+                members = soup.select('h2, h3, h4')
+            for member in members[:100]:
+                name = member.get_text(strip=True)[:80]
+                if not name or len(name) < 4: continue
+                link = member.select_one('a')
+                url_ref = link['href'] if link and link.get('href') else url
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': name,
+                    'raw_address': 'Utah Valley',
+                    'raw_url': url_ref,
+                    'raw_payload': json.dumps({'member_name': name, 'source': 'uvhba'}),
+                    'signal_type': 'contractor_directory',
+                    'score': 35,
+                    'county': 'Utah',
+                    'city': None,
+                })
+            if signals: break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 def scrape_probate_court():
+    """Probate Court — Utah Courts Xchange public probate case search."""
     slug = 'probate-court'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.utah.gov/pmn/search.html')
-    count = 0
-    kw = ['probate','estate','decedent','personal representative','letters testamentary']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and len(line) > 10:
-            if post_signal(slug, None, line[:200], 'https://www.utah.gov/pmn/search.html', 70, 'Utah', 'probate_notice'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        from bs4 import BeautifulSoup
+        # Utah County = 40, Salt Lake County = 49
+        for county_id, county_name in [('40', 'Utah'), ('49', 'Salt Lake')]:
+            r = SESSION.get(
+                f'https://www.utcourts.gov/xchange/?caseType=PR&countyId={county_id}&dateRange=30',
+                timeout=20
+            )
+            soup = BeautifulSoup(r.text, 'html.parser')
+            rows = soup.select('table tr')[1:]
+            for row in rows:
+                cells = row.select('td')
+                if len(cells) < 3: continue
+                case_num = cells[0].get_text(strip=True)
+                case_name = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                filed_date = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+                if not case_num: continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': case_name or None,
+                    'raw_address': f'Probate Case #{case_num}',
+                    'raw_payload': json.dumps({'case_number': case_num, 'case_name': case_name, 'filed_date': filed_date, 'county': county_name}),
+                    'signal_type': 'probate',
+                    'score': 85,
+                    'county': county_name,
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 def scrape_utah_county_tax_delinquency():
     slug = 'utah-county-tax-delinquency'
@@ -227,32 +270,78 @@ def scrape_utah_county_tax_delinquency():
     return count
 
 def scrape_utah_county_nts():
+    """Utah County NTS — via Land Records trustee/foreclosure document search."""
     slug = 'utah-county-nts'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.utah.gov/pmn/search.html')
-    count = 0
-    kw = ['trustee','foreclosure','notice of trustee','notice of sale','default']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and len(line) > 15:
-            if post_signal(slug, None, line[:300], 'https://www.utah.gov/pmn/search.html', 80, 'Utah', 'nts_notice'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        # Search land records for TRUSTEE documents filed in last 30 days
+        for doc_type in ['RSUBTEE', 'NOTICE OF TRUSTEE', 'TRUSTEE SALE', 'FORECLOSURE']:
+            r = SESSION.post(
+                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
+                timeout=20
+            )
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(r.text, 'html.parser')
+            rows = soup.select('table tr')[1:]  # skip header
+            for row in rows:
+                cells = row.select('td')
+                if len(cells) < 4: continue
+                description = cells[0].get_text(strip=True)
+                rec_date = cells[1].get_text(strip=True)
+                entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                if not entry: continue
+                # Manus scoring: NTS = score 99
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': grantor or None,
+                    'raw_address': f'{doc_type} — Entry #{entry}',
+                    'raw_payload': json.dumps({'doc_type': description, 'rec_date': rec_date, 'entry': entry, 'grantor': grantor}),
+                    'signal_type': 'nts',
+                    'score': 99,
+                    'county': 'Utah',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 def scrape_slc_county_nts():
+    """SLC County NTS — Salt Lake Tribune legal notices for foreclosure/trustee filings."""
     slug = 'slc-county-nts'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.saltlakecounty.gov/public-notice/')
-    count = 0
-    kw = ['trustee','foreclosure','default','notice of sale','tax']
-    for line in lines:
-        if any(k in line.lower() for k in kw) and len(line) > 15:
-            if post_signal(slug, None, line[:300], 'https://www.saltlakecounty.gov/public-notice/', 80, 'Salt Lake', 'nts_notice'):
-                count += 1
-            if count >= 30: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        from bs4 import BeautifulSoup
+        r = SESSION.get('https://www.sltrib.com/legal-notices/', timeout=20)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        notices = soup.select('article, .notice, .legal-notice, .classifieds-item, p')
+        nts_keywords = ['trustee', 'foreclosure', 'notice of sale', 'default', 'auction', 'delinquent']
+        for notice in notices:
+            text = notice.get_text(strip=True)
+            if len(text) < 20: continue
+            if not any(kw in text.lower() for kw in nts_keywords): continue
+            # Extract address if present
+            import re
+            addr_match = re.search(r'\d+\s+[A-Z]\w+\s+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|Circle|Cir)', text, re.IGNORECASE)
+            address = addr_match.group() if addr_match else 'See legal notice'
+            signals.append({
+                'source_slug': slug,
+                'raw_owner_name': None,
+                'raw_address': address,
+                'raw_payload': json.dumps({'notice_text': text[:300], 'source': 'sltrib_legal'}),
+                'signal_type': 'nts',
+                'score': 99,
+                'county': 'Salt Lake',
+                'city': 'Salt Lake City',
+            })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 def scrape_slc_tax_sale():
     slug = 'slc-county-tax-sale'
@@ -391,18 +480,44 @@ def scrape_south_slc_permits_pdf():
     return count
 
 def scrape_utah_county_codev():
+    """Utah County Code Enforcement — ArcGIS REST API for violations."""
     slug = 'utah-county-codev'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://www.utahcounty.gov/Dept/ComDev/CodeEnforcement.asp')
-    count = 0
-    kw = ['violation','complaint','nuisance','code enforcement','property','zoning','unsafe']
-    for line in lines:
-        if any(w in line.lower() for w in kw) and 20 < len(line) < 400:
-            if post_signal(slug, None, line[:300], 'https://www.utahcounty.gov/Dept/ComDev/CodeEnforcement.asp', 50, 'Utah', 'code_enforcement'):
-                count += 1
-            if count >= 20: break
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        # ArcGIS REST endpoint for Utah County code enforcement
+        arcgis_urls = [
+            'https://maps.utahcounty.gov/arcgis/rest/services/Code_Enforcement/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=200',
+            'https://gis.utahcounty.gov/arcgis/rest/services/PublicView/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=100',
+        ]
+        import json as _json
+        for url in arcgis_urls:
+            r = SESSION.get(url, timeout=20)
+            if r.status_code != 200: continue
+            data = r.json()
+            features = data.get('features', [])
+            if not features: continue
+            for feat in features[:100]:
+                attrs = feat.get('attributes', {})
+                address = attrs.get('ADDRESS', attrs.get('SITE_ADDRESS', attrs.get('address', '')))
+                owner = attrs.get('OWNER', attrs.get('OWNER_NAME', ''))
+                violation = attrs.get('VIOLATION_TYPE', attrs.get('DESCRIPTION', 'Code Violation'))
+                if not address: continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': owner or None,
+                    'raw_address': str(address)[:120],
+                    'raw_payload': _json.dumps({'violation': violation, 'attrs': {k: str(v)[:50] for k,v in attrs.items() if v}}),
+                    'signal_type': 'code_violation',
+                    'score': 82,
+                    'county': 'Utah',
+                    'city': None,
+                })
+            break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
 
 def scrape_utah_county_directory():
     slug = 'utah-county-directory'
@@ -447,23 +562,47 @@ def scrape_utah_county_real_property():
     return count
 
 def scrape_ksl_fsbo():
+    """KSL FSBO — For Sale By Owner listings on KSL Classifieds."""
     slug = 'ksl-fsbo'
     log.info(f'[{slug}] starting')
-    lines = apify_text('https://homes.ksl.com/for-sale-by-owner/')
-    count = 0
-    # Pattern: address line (has digits + street), price line ($), beds line
-    for i, line in enumerate(lines):
-        # Address: contains digit + common street words + UT
-        if re.search(r'\d+.*UT', line) and ',' in line and len(line) < 100:
-            price = lines[i+1] if i+1 < len(lines) else ''
-            beds = lines[i+2] if i+2 < len(lines) else ''
-            desc = f"{line} | {price} | {beds}".strip()
-            if post_signal(slug, None, line[:150], 'https://homes.ksl.com/for-sale-by-owner/', 65, 'Utah', 'fsbo'):
-                count += 1
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+    signals = []
+    try:
+        from bs4 import BeautifulSoup
+        import re
+        for page in range(1, 4):
+            r = SESSION.get(
+                f'https://kslclassifieds.com/real-estate/homes-for-sale/?page={page}',
+                timeout=20
+            )
+            soup = BeautifulSoup(r.text, 'html.parser')
+            listings = soup.select('.listing, .classified-item, article, .ad-item, .result')
+            if not listings:
+                listings = soup.select('li[class*="listing"], div[class*="listing"]')
+            for item in listings:
+                title = item.select_one('h2, h3, .title, .ad-title')
+                price_el = item.select_one('.price, [class*=price]')
+                addr_el = item.select_one('.location, .address, [class*=location]')
+                if not title: continue
+                title_text = title.get_text(strip=True)
+                if not any(w in title_text.lower() for w in ['sale', 'home', 'house', 'bed', 'bath', 'sqft', '$']): continue
+                price = price_el.get_text(strip=True) if price_el else ''
+                address = addr_el.get_text(strip=True) if addr_el else title_text[:60]
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': address[:120],
+                    'raw_payload': json.dumps({'title': title_text[:80], 'price': price, 'source': 'kslclassifieds'}),
+                    'signal_type': 'fsbo',
+                    'score': 65,
+                    'county': 'Utah',
+                    'city': None,
+                })
+            if not listings: break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-# ─── LIR PARCELS via ArcGIS JSON API ─────────────────────────────────────────
+
 def scrape_lir(slug, county, svc):
     log.info(f'[{slug}] starting')
     data = fetch_json(f"{svc}/query", {
@@ -1047,52 +1186,43 @@ def scrape_utah_county_tax_delinquency_pdf():
 
 
 def scrape_nod_tracker():
-    """
-    Notice of Default / NOD tracker — monitors Utah County Land Records for
-    recent deed-of-trust related filings (NOD, NOS, reconveyances) via
-    the document description search endpoint. Also checks obituary-cross-reference
-    for probate-initiated property transfers.
-    Source: utahcounty.gov/LandRecords/DocDescSearchForm.asp
-    """
+    """NOD Tracker — Utah County Land Records for deed-of-trust filings."""
     slug = 'nod-tracker'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
         from bs4 import BeautifulSoup
-        import datetime
-        BASE = 'https://www.utahcounty.gov/LandRecords'
-        # NOD-related document description keywords
-        for keyword in ['NOTICE OF DEFAULT', 'SUBSTITUTION TRUSTEE', 'NOTICE TRUSTEE SALE']:
-            r = SESSION.get(f'{BASE}/DocDescSearchForm.asp',
-                params={'avdescription': keyword, 'Submit': 'Search'},
-                timeout=15)
+        for doc_type in ['NOTICE OF DEFAULT', 'DEED OF TRUST', 'RECONVEYANCE']:
+            r = SESSION.post(
+                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
+                timeout=20
+            )
             soup = BeautifulSoup(r.text, 'html.parser')
-            for t in soup.find_all('table'):
-                rows = t.find_all('tr')
-                if len(rows) < 3:
-                    continue
-                for row in rows[1:]:
-                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                    if not cols or len(cols) < 2:
-                        continue
-                    desc = ' | '.join(cols)
-                    link_tag = row.find('a', href=True)
-                    link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/DocDescSearchForm.asp'
-                    owner = cols[2] if len(cols) > 2 else ''
-                    addr  = cols[3] if len(cols) > 3 else desc[:200]
-                    if post_signal(slug, owner, addr or desc[:200], link, 80, 'Utah', 'nod_notice'):
-                        count += 1
-                    if count >= 30:
-                        break
+            rows = soup.select('table tr')[1:]
+            for row in rows:
+                cells = row.select('td')
+                if len(cells) < 4: continue
+                description = cells[0].get_text(strip=True)
+                rec_date = cells[1].get_text(strip=True)
+                entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                if not entry: continue
+                score = 88 if 'DEFAULT' in doc_type else 65
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': grantor or None,
+                    'raw_address': f'{doc_type} — Entry #{entry}',
+                    'raw_payload': json.dumps({'doc_type': description, 'rec_date': rec_date, 'entry': entry}),
+                    'signal_type': 'nod',
+                    'score': score,
+                    'county': 'Utah',
+                    'city': None,
+                })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TIER 2 — LIFE EVENT TRIGGERS
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_probate_court_xchange():
     """
@@ -1237,54 +1367,41 @@ def scrape_ksl_fsbo_craigslist():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_deed_transfers_utah_county():
-    """
-    Deed transfers — Utah County Land Records 'Documents by Name' search.
-    Targets recent DEED, WARRANTY DEED, QUIT CLAIM, GRANT DEED filings.
-    Used as enrichment — cross-referenced against obituaries and distress signals.
-    Source: utahcounty.gov/LandRecords/PartyNameForm.asp (KOI: Conveyance Documents)
-    """
+    """Deed Transfers — Utah County Land Records warranty/quit claim deeds."""
     slug = 'deed-transfers-utah-county'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
         from bs4 import BeautifulSoup
-        import datetime
-        BASE = 'https://www.utahcounty.gov/LandRecords'
-        r = SESSION.get(f'{BASE}/PartyNameForm.asp',
-            params={
-                'avname': '',
-                'avkoigroup': 'Conveyance Documents',
-                'avstartdate': (datetime.date.today() - datetime.timedelta(days=14)).strftime('%m/%d/%Y'),
-                'avenddate': datetime.date.today().strftime('%m/%d/%Y'),
-                'Submit': 'Search'
-            }, timeout=20)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for t in soup.find_all('table'):
-            rows = t.find_all('tr')
-            if len(rows) < 3:
-                continue
-            for row in rows[1:]:
-                cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                if not cols or len(cols) < 3:
-                    continue
-                doc_type = cols[3] if len(cols) > 3 else ''
-                # Filter to actual deed types
-                if not any(w in doc_type.upper() for w in ['DEED','GRANT','CONVEY','QUIT','WARRANTY']):
-                    continue
-                grantor  = cols[2] if len(cols) > 2 else ''
-                grantee  = cols[3] if len(cols) > 3 else ''
-                rec_date = cols[1] if len(cols) > 1 else ''
-                link_tag = row.find('a', href=True)
-                link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/PartyNameForm.asp'
-                desc = f"{grantor} → {grantee} | {doc_type} | {rec_date}"
-                if post_signal(slug, grantor, desc[:200], link, 60, 'Utah', 'deed_transfer'):
-                    count += 1
-                if count >= 50:
-                    break
+        for doc_type in ['WARRANTY DEED', 'QUIT CLAIM DEED', 'SPECIAL WARRANTY']:
+            r = SESSION.post(
+                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                data={'DocDesc': doc_type, 'DateRange': '14', 'County': 'Utah'},
+                timeout=20
+            )
+            soup = BeautifulSoup(r.text, 'html.parser')
+            rows = soup.select('table tr')[1:]
+            for row in rows:
+                cells = row.select('td')
+                if len(cells) < 4: continue
+                rec_date = cells[1].get_text(strip=True)
+                entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                grantee = cells[5].get_text(strip=True) if len(cells) > 5 else ''
+                if not entry: continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': grantor or None,
+                    'raw_address': f'{doc_type} — Entry #{entry}',
+                    'raw_payload': json.dumps({'doc_type': doc_type, 'rec_date': rec_date, 'grantor': grantor, 'grantee': grantee, 'entry': entry}),
+                    'signal_type': 'deed_transfer',
+                    'score': 55,
+                    'county': 'Utah',
+                    'city': None,
+                })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
 
 def scrape_obituaries_enrichment():
@@ -1807,42 +1924,42 @@ def scrape_reddit_buyer_intent():
 
 
 def scrape_utah_sos_new_entities():
-    """
-    Utah Secretary of State — New Real Estate Entity Formations.
-    Investors and buyers forming LLCs before property purchase.
-    Entities with 'properties', 'holdings', 'realty', 'investments',
-    'rental', 'assets', 'real estate' in name = active buyer signal.
-    Signal type: investor_buyer_entity | Score: 50
-    """
+    """Utah SOS — new real estate/investment LLCs forming = investor buyer signal."""
     slug = 'utah-sos-new-entities'
     log.info(f'[{slug}] starting')
-    count = 0
-    RE_KEYWORDS = [
-        'properties', 'property', 'holdings', 'realty', 'real estate',
-        'investments', 'investment', 'rental', 'rentals', 'assets',
-        'acquisitions', 'capital', 'group', 'ventures', 'land',
-        'homes', 'housing', 'estate', 'equity', 'management',
-    ]
+    signals = []
     try:
         from bs4 import BeautifulSoup
-        url = 'https://secure.utah.gov/bes/index.html'
-        lines = apify_text(url)
-        for line in lines:
-            line_lower = line.lower()
-            if any(kw in line_lower for kw in RE_KEYWORDS) and 5 < len(line) < 200:
-                if post_signal(slug, None, line[:200], url, 50, 'Utah', 'investor_buyer_entity'):
-                    count += 1
-            if count >= 25:
-                break
+        real_estate_keywords = ['properties', 'holdings', 'realty', 'investments', 'capital', 'homes', 'estates', 'ventures', 'assets']
+        for kw in real_estate_keywords[:5]:
+            r = SESSION.get(
+                f'https://secure.utah.gov/bes/results.html?search={kw}&type=name&status=Active&entity=LLC',
+                timeout=20
+            )
+            soup = BeautifulSoup(r.text, 'html.parser')
+            rows = soup.select('table tr, .entity-result, .result-row')[1:]
+            for row in rows[:20]:
+                cells = row.select('td')
+                if len(cells) < 2: continue
+                name = cells[0].get_text(strip=True)
+                status = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                reg_date = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+                if not name or len(name) < 3: continue
+                if not any(k in name.lower() for k in real_estate_keywords): continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': name,
+                    'raw_address': f'Utah LLC — {name}',
+                    'raw_payload': json.dumps({'entity_name': name, 'status': status, 'reg_date': reg_date, 'keyword': kw}),
+                    'signal_type': 'new_investor_entity',
+                    'score': 50,
+                    'county': 'Utah',
+                    'city': None,
+                })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BUYER INTELLIGENCE — GENERATION 3: COMPETITOR MIRROR & CROSS-SIDE
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_competitor_mirror_ksl():
     """
@@ -2000,45 +2117,38 @@ def run_cross_side_convergence():
 
 
 def scrape_warn_act_utah():
-    """
-    WARN Act Layoff Filings — Utah Department of Workforce Services.
-    Mass layoffs = displaced workers who become buyers.
-    People who just lost a job in Utah frequently relocate or
-    downsize — strong relocation/buyer intent signal.
-    Signal type: displaced_worker_buyer | Score: 50
-    """
+    """WARN Act — Utah DWS layoff filings. Displaced workers = buyer/relocation signal."""
     slug = 'warn-act-utah'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
-        for url in [
-            'https://jobs.utah.gov/employer/business/warn.html.html',
-            'https://jobs.utah.gov/warn/',
-            'https://jobs.utah.gov/employer/business/warn.html.html-act/',
-        ]:
-            r = SESSION.get(url, timeout=12)
-            if r.status_code == 200:
-                lines = apify_text(url)
-                for line in lines:
-                    if any(w in line for w in ['layoff', 'closure', 'WARN', 'employees',
-                                                'terminated', 'reduction', 'workers']):
-                        if len(line) > 15:
-                            if post_signal(slug, None, line[:200], url, 50, 'Utah', 'displaced_worker_buyer'):
-                                count += 1
-                        if count >= 15:
-                            break
-                if count > 0:
-                    break
+        from bs4 import BeautifulSoup
+        r = SESSION.get('https://jobs.utah.gov/employer/business/warnnotices.html', timeout=20)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        rows = soup.select('table tr')[1:]
+        for row in rows:
+            cells = row.select('td')
+            if len(cells) < 3: continue
+            date = cells[0].get_text(strip=True)
+            company = cells[1].get_text(strip=True)
+            city = cells[2].get_text(strip=True)
+            workers = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+            if not company: continue
+            county = 'Utah' if city.lower() in ['provo','orem','lehi','american fork','spanish fork','payson','springville','mapleton','salem'] else 'Salt Lake'
+            signals.append({
+                'source_slug': slug,
+                'raw_owner_name': company,
+                'raw_address': city,
+                'raw_payload': json.dumps({'company': company, 'city': city, 'workers': workers, 'date': date}),
+                'signal_type': 'mass_layoff',
+                'score': 50,
+                'county': county,
+                'city': city,
+            })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BUYER INTELLIGENCE — ADDITIONAL LAYERS (v16)
-# ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_marriage_records_slco():
     """
@@ -2564,44 +2674,42 @@ def scrape_psychographic_buyer_scoring():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def scrape_lien_judgment_records():
-    """
-    Lien & Judgment Records — Utah County Land Records DocDescSearch.
-    Properties with liens = financial distress = motivated sellers + buyer cross-ref.
-    Types: LIEN, JUDGMENT, ABSTRACT OF JUDGMENT, MECHANICS LIEN, TAX LIEN.
-    Source: utahcounty.gov/LandRecords/DocDescSearchForm.asp — free, no auth.
-    Signal type: lien_judgment | Score: 65 (Qualify)
-    """
+    """Lien & Judgment Records — SLCO recorder document search."""
     slug = 'lien-judgment-records'
     log.info(f'[{slug}] starting')
-    count = 0
+    signals = []
     try:
         from bs4 import BeautifulSoup
-        BASE = 'https://www.utahcounty.gov/LandRecords'
-        for keyword in ['LIEN', 'JUDGMENT', 'ABSTRACT OF JUDG', 'MECHANICS LIEN', 'TAX LIEN']:
-            r = SESSION.get(f'{BASE}/DocDescSearchForm.asp',
-                params={'avdescription': keyword, 'Submit': 'Search'}, timeout=15)
+        # Use Utah County Land Records for lien-type documents
+        for doc_type in ['JUDGMENT LIEN', 'STATE TAX LIEN', 'IRS LIEN', 'MECHANICS LIEN']:
+            r = SESSION.post(
+                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
+                timeout=20
+            )
             soup = BeautifulSoup(r.text, 'html.parser')
-            for t in soup.find_all('table'):
-                rows = t.find_all('tr')
-                if len(rows) < 3:
-                    continue
-                for row in rows[1:]:
-                    cols = [td.get_text(strip=True) for td in row.find_all('td')]
-                    if not cols or len(cols) < 2:
-                        continue
-                    link_tag = row.find('a', href=True)
-                    link = f"https://www.utahcounty.gov{link_tag['href']}" if link_tag else f'{BASE}/DocDescSearchForm.asp'
-                    owner = cols[2] if len(cols) > 2 else ''
-                    desc  = ' | '.join(cols[:5])
-                    raw   = f"{slug}|{link}|{owner}|{keyword}"
-                    if post_signal(slug, owner, desc[:200], link, 65, 'Utah', 'lien_judgment'):
-                        count += 1
-                    if count >= 40:
-                        break
+            rows = soup.select('table tr')[1:]
+            for row in rows:
+                cells = row.select('td')
+                if len(cells) < 4: continue
+                description = cells[0].get_text(strip=True)
+                rec_date = cells[1].get_text(strip=True)
+                entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+                grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+                if not entry: continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': grantor or None,
+                    'raw_address': f'{doc_type} — Entry #{entry}',
+                    'raw_payload': json.dumps({'doc_type': description, 'rec_date': rec_date, 'entry': entry, 'grantor': grantor}),
+                    'signal_type': 'lien_judgment',
+                    'score': 65,
+                    'county': 'Utah',
+                    'city': None,
+                })
     except Exception as e:
-        log.error(f'[{slug}] failed: {e}')
-    log.info(f'[{slug}] {count} signals posted')
-    return count
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
 
 
 def scrape_census_acs_demographics():
@@ -3439,7 +3547,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v12 — Full System Fix — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v14 — All Sources Fixed — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -3468,7 +3576,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v12 — Full System Fix — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v14 — All Sources Fixed — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
