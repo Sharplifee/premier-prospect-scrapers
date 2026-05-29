@@ -3327,6 +3327,573 @@ def scrape_slc_county_tax_sale():
     return post_signals_batch(signals)
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UTAH MARKETPLACE INTELLIGENCE — v16
+# Full competitor + marketplace sweep across all major Utah RE platforms
+# Signals: competitor_listing, rental_listing, distressed_sale, fsbo, new_construction
+# ═══════════════════════════════════════════════════════════════════════════
+
+def scrape_trulia_utah():
+    """Trulia Utah — competitor listing monitor. Price cuts + days on market signal."""
+    slug = 'trulia-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.trulia.com/UT/',
+            'https://www.trulia.com/for_sale/Utah_state/price_reduced/',
+            'https://www.trulia.com/for_sale/Utah_state/FSBO_lt/',
+        ]:
+            r = SESSION.get(url, timeout=20)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Trulia renders listing cards in HTML
+            cards = soup.select('[data-testid="property-card"], .PropertyCard, [class*="PropertyCard"]')
+            if not cards:
+                cards = soup.select('li[class*="search"], div[class*="listing"]')
+            for card in cards[:50]:
+                text = card.get_text(separator=' ', strip=True)
+                price = re.search(r'\$([\d,]+)', text)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W))', text, re.IGNORECASE)
+                beds = re.search(r'(\d+)\s*bd', text, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?\s*on', text, re.IGNORECASE)
+                if not (price or addr): continue
+                # Score by days on market — longer = more motivated seller
+                days = int(dom.group(1)) if dom else 0
+                score = 82 if days >= 60 else 65 if days >= 30 else 45
+                county = 'Utah' if any(c in text for c in ['Provo','Orem','Lehi','American Fork','Spanish Fork']) else 'Salt Lake'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'Trulia Utah listing',
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'beds': beds.group(1) if beds else '',
+                        'days_on_market': days,
+                        'source': 'trulia'
+                    }),
+                    'signal_type': 'competitor_listing',
+                    'score': score,
+                    'county': county,
+                    'city': None,
+                })
+            if signals: break
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_rentler_utah():
+    """Rentler — Utah's largest rental platform. Landlords listing = investor seller signal."""
+    slug = 'rentler-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://rentler.com/search?location=Salt+Lake+City%2C+UT&propertyType=house',
+            'https://rentler.com/search?location=Provo%2C+UT&propertyType=house',
+            'https://rentler.com/search?location=Ogden%2C+UT&propertyType=house',
+            'https://rentler.com/search?location=Utah+County%2C+UT',
+        ]:
+            r = SESSION.get(url, timeout=20)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            cards = soup.select('.listing-card, .property-card, [class*="listing"], article')
+            if not cards:
+                lines = apify_text(url)
+                for line in lines:
+                    price = re.search(r'\$([\d,]+)/mo', line, re.IGNORECASE)
+                    addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+                    if price and addr:
+                        rent = int(price.group(1).replace(',',''))
+                        # High-rent single family = investor landlord = potential seller
+                        score = 72 if rent >= 2000 else 55
+                        signals.append({
+                            'source_slug': slug,
+                            'raw_owner_name': None,
+                            'raw_address': addr.group(1)[:120],
+                            'raw_payload': json.dumps({'rent': rent, 'source': 'rentler', 'url': url}),
+                            'signal_type': 'rental_listing',
+                            'score': score,
+                            'county': 'Utah' if 'Provo' in url or 'Utah' in url else 'Salt Lake',
+                            'city': None,
+                        })
+                continue
+            for card in cards[:40]:
+                text = card.get_text(separator=' ', strip=True)
+                price = re.search(r'\$([\d,]+)', text)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', text, re.IGNORECASE)
+                if not price: continue
+                rent = int(price.group(1).replace(',','')) if price else 0
+                score = 72 if rent >= 2000 else 55
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'Rentler: {text[:60]}',
+                    'raw_payload': json.dumps({'rent': rent, 'source': 'rentler'}),
+                    'signal_type': 'rental_listing',
+                    'score': score,
+                    'county': 'Utah' if 'Provo' in url or 'Utah+County' in url else 'Salt Lake',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_ksl_homes_market():
+    """KSL Homes — Utah's dominant local listing platform. Price cuts + DOM signals."""
+    slug = 'ksl-homes-market'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://homes.ksl.com/for-sale/?county=Utah&sort=newest',
+            'https://homes.ksl.com/for-sale/?county=Salt+Lake&sort=newest',
+            'https://homes.ksl.com/for-sale/?county=Weber&sort=newest',
+            'https://homes.ksl.com/for-sale-by-owner/',
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct|N|S|E|W))', line, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?', line, re.IGNORECASE)
+                if not (price or addr): continue
+                days = int(dom.group(1)) if dom else 0
+                is_fsbo = 'by owner' in url.lower() or 'fsbo' in line.lower()
+                score = 82 if is_fsbo else (75 if days >= 60 else 55 if days >= 30 else 40)
+                county = 'Weber' if 'Weber' in url else ('Salt Lake' if 'Salt+Lake' in url else 'Utah')
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'days_on_market': days,
+                        'is_fsbo': is_fsbo,
+                        'source': 'ksl_homes'
+                    }),
+                    'signal_type': 'fsbo' if is_fsbo else 'competitor_listing',
+                    'score': score,
+                    'county': county,
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_zillow_utah():
+    """Zillow Utah — via Apify residential proxy. Price cuts + FSBO + Zestimates."""
+    slug = 'zillow-utah-market'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.zillow.com/provo-ut/',
+            'https://www.zillow.com/salt-lake-city-ut/',
+            'https://www.zillow.com/ogden-ut/',
+            'https://www.zillow.com/lehi-ut/',
+            'https://www.zillow.com/orem-ut/',
+        ]:
+            lines = apify_text(url)
+            city = url.split('/')[3].split('-ut')[0].replace('-',' ').title()
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct))', line, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?\s*on', line, re.IGNORECASE)
+                cut = re.search(r'price\s+cut|reduced|price\s+drop', line, re.IGNORECASE)
+                if not (price or addr): continue
+                days = int(dom.group(1)) if dom else 0
+                score = 75 if cut else (65 if days >= 45 else 45)
+                county = 'Salt Lake' if 'salt-lake' in url or 'sandy' in url else 'Utah'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'{city}: {line[:60]}',
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'days_on_market': days,
+                        'price_cut': bool(cut),
+                        'city': city,
+                        'source': 'zillow'
+                    }),
+                    'signal_type': 'competitor_listing',
+                    'score': score,
+                    'county': county,
+                    'city': city,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_realtor_com_utah():
+    """Realtor.com Utah — via Apify. Days on market + price reduction signals."""
+    slug = 'realtor-com-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.realtor.com/realestateandhomes-search/Provo_UT',
+            'https://www.realtor.com/realestateandhomes-search/Salt-Lake-City_UT',
+            'https://www.realtor.com/realestateandhomes-search/Orem_UT',
+            'https://www.realtor.com/realestateandhomes-search/Lehi_UT',
+        ]:
+            lines = apify_text(url)
+            city = url.split('/')[-1].split('_UT')[0].replace('-',' ')
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct))', line, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?', line, re.IGNORECASE)
+                cut = 'reduced' in line.lower() or 'price cut' in line.lower() or 'price drop' in line.lower()
+                if not (price or addr): continue
+                days = int(dom.group(1)) if dom else 0
+                score = 75 if cut else (65 if days >= 45 else 45)
+                county = 'Salt Lake' if 'Salt-Lake' in url else 'Utah'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'{city}: {line[:60]}',
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'days_on_market': days,
+                        'price_cut': cut,
+                        'city': city,
+                        'source': 'realtor_com'
+                    }),
+                    'signal_type': 'competitor_listing',
+                    'score': score,
+                    'county': county,
+                    'city': city,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_redfin_utah():
+    """Redfin Utah — via Apify. Hot homes + price drops + days on market."""
+    slug = 'redfin-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.redfin.com/city/14971/UT/Provo',
+            'https://www.redfin.com/city/17312/UT/Salt-Lake-City',
+            'https://www.redfin.com/city/12867/UT/Ogden',
+            'https://www.redfin.com/city/10069/UT/Lehi',
+        ]:
+            lines = apify_text(url)
+            city = url.split('/UT/')[-1].replace('-',' ')
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct))', line, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?', line, re.IGNORECASE)
+                cut = any(w in line.lower() for w in ['reduced', 'price drop', 'price cut', 'back on market'])
+                hot = 'hot home' in line.lower() or 'hot listing' in line.lower()
+                if not (price or addr): continue
+                days = int(dom.group(1)) if dom else 0
+                score = 72 if cut else (80 if hot else (60 if days >= 45 else 40))
+                county = 'Salt Lake' if 'Salt-Lake' in url or 'Ogden' in url else 'Utah'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'{city}: {line[:60]}',
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'days_on_market': days,
+                        'price_cut': cut,
+                        'hot_home': hot,
+                        'source': 'redfin'
+                    }),
+                    'signal_type': 'competitor_listing',
+                    'score': score,
+                    'county': county,
+                    'city': city,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_apartments_com_utah():
+    """Apartments.com Utah — rental market intelligence. High-rent SFR = investor seller signal."""
+    slug = 'apartments-com-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.apartments.com/provo-ut/',
+            'https://www.apartments.com/salt-lake-city-ut/',
+            'https://www.apartments.com/ogden-ut/',
+            'https://www.apartments.com/orem-ut/',
+        ]:
+            lines = apify_text(url)
+            city = url.split('/')[-2].split('-ut')[0].replace('-',' ').title()
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+                if not price: continue
+                rent = int(price.group(1).replace(',',''))
+                if rent < 800 or rent > 15000: continue
+                score = 72 if rent >= 2500 else 55
+                county = 'Salt Lake' if city in ['Salt Lake City','Ogden'] else 'Utah'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else f'{city} rental: {line[:60]}',
+                    'raw_payload': json.dumps({'rent': rent, 'city': city, 'source': 'apartments_com'}),
+                    'signal_type': 'rental_listing',
+                    'score': score,
+                    'county': county,
+                    'city': city,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_craigslist_housing_utah():
+    """Craigslist housing Utah — FSBO + rental + housing wanted posts."""
+    slug = 'craigslist-housing-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        searches = [
+            ('https://saltlake.craigslist.org/search/reo?sort=date', 'Salt Lake', 'real_estate_by_owner'),
+            ('https://provo.craigslist.org/search/reo?sort=date', 'Utah', 'real_estate_by_owner'),
+            ('https://saltlake.craigslist.org/search/apa?sort=date&max_price=3000', 'Salt Lake', 'rental_listing'),
+            ('https://provo.craigslist.org/search/apa?sort=date&max_price=2500', 'Utah', 'rental_listing'),
+        ]
+        for url, county, sig_type in searches:
+            lines = apify_text(url)
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+                if not (price or len(line) > 15): continue
+                score = 75 if sig_type == 'real_estate_by_owner' else 55
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({'price': price.group() if price else '', 'source': 'craigslist', 'type': sig_type}),
+                    'signal_type': sig_type,
+                    'score': score,
+                    'county': county,
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_loopnet_utah():
+    """LoopNet Utah — commercial and investment property listings."""
+    slug = 'loopnet-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.loopnet.com/search/commercial-real-estate/utah/for-sale/',
+            'https://www.loopnet.com/search/multifamily-apartment-buildings/utah/for-sale/',
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                price = re.search(r'\$([\d,.]+[MK]?)', line, re.IGNORECASE)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way))', line, re.IGNORECASE)
+                prop_type = re.search(r'(multifamily|apartment|industrial|office|retail|land)', line, re.IGNORECASE)
+                if not (price or addr): continue
+                score = 65  # Commercial = investor seller
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({
+                        'price': price.group() if price else '',
+                        'property_type': prop_type.group(1) if prop_type else 'commercial',
+                        'source': 'loopnet'
+                    }),
+                    'signal_type': 'competitor_listing',
+                    'score': score,
+                    'county': 'Utah',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_hubzu_utah():
+    """Hubzu Utah — bank-owned and foreclosure auction properties."""
+    slug = 'hubzu-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        lines = apify_text('https://www.hubzu.com/search?stateId=UT')
+        for line in lines:
+            price = re.search(r'\$([\d,]+)', line)
+            addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+            auction = any(w in line.lower() for w in ['auction', 'bid', 'bank-owned', 'reo', 'foreclosure'])
+            if not (price or addr): continue
+            score = 85 if auction else 65  # Bank-owned = highly motivated
+            signals.append({
+                'source_slug': slug,
+                'raw_owner_name': None,
+                'raw_address': addr.group(1)[:120] if addr else line[:80],
+                'raw_payload': json.dumps({
+                    'price': price.group() if price else '',
+                    'is_auction': auction,
+                    'source': 'hubzu'
+                }),
+                'signal_type': 'distressed_sale',
+                'score': score,
+                'county': 'Utah',
+                'city': None,
+            })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_reo_utah():
+    """REO.com Utah — bank-owned REO properties. Motivated institutional seller."""
+    slug = 'reo-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        lines = apify_text('https://www.reo.com/listings/utah')
+        for line in lines:
+            price = re.search(r'\$([\d,]+)', line)
+            addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+            if not (price or addr): continue
+            signals.append({
+                'source_slug': slug,
+                'raw_owner_name': None,
+                'raw_address': addr.group(1)[:120] if addr else line[:80],
+                'raw_payload': json.dumps({'price': price.group() if price else '', 'source': 'reo_com'}),
+                'signal_type': 'distressed_sale',
+                'score': 82,  # REO = bank-owned = must sell
+                'county': 'Utah',
+                'city': None,
+            })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_homesnap_utah():
+    """Homesnap Utah — MLS-connected listing data. Agent-listed properties."""
+    slug = 'homesnap-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        r = SESSION.get('https://www.homesnap.com/ut', timeout=20)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        cards = soup.select('[class*="listing"], [class*="property"], article, .card')
+        if not cards:
+            lines = apify_text('https://www.homesnap.com/ut')
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+                dom = re.search(r'(\d+)\s*days?', line, re.IGNORECASE)
+                if not (price or addr): continue
+                days = int(dom.group(1)) if dom else 0
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({'price': price.group() if price else '', 'days_on_market': days}),
+                    'signal_type': 'competitor_listing',
+                    'score': 65 if days >= 30 else 40,
+                    'county': 'Utah',
+                    'city': None,
+                })
+        else:
+            for card in cards[:40]:
+                text = card.get_text(separator=' ', strip=True)
+                price = re.search(r'\$([\d,]+)', text)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', text, re.IGNORECASE)
+                if not (price or addr): continue
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else text[:80],
+                    'raw_payload': json.dumps({'price': price.group() if price else '', 'source': 'homesnap'}),
+                    'signal_type': 'competitor_listing',
+                    'score': 40,
+                    'county': 'Utah',
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_forsalebyowner_utah():
+    """ForSaleByOwner.com Utah — confirmed FSBO listings. No agent = opportunity."""
+    slug = 'forsalebyowner-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        for url in [
+            'https://www.forsalebyowner.com/real-estate/utah/',
+            'https://www.forsalebyowner.com/real-estate/utah/salt-lake-county/',
+            'https://www.forsalebyowner.com/real-estate/utah/utah-county/',
+        ]:
+            lines = apify_text(url)
+            for line in lines:
+                price = re.search(r'\$([\d,]+)', line)
+                addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln|Ct))', line, re.IGNORECASE)
+                if not (price or addr): continue
+                county = 'Salt Lake' if 'salt-lake' in url else 'Utah'
+                signals.append({
+                    'source_slug': slug,
+                    'raw_owner_name': None,
+                    'raw_address': addr.group(1)[:120] if addr else line[:80],
+                    'raw_payload': json.dumps({'price': price.group() if price else '', 'source': 'fsbo_com', 'county': county}),
+                    'signal_type': 'fsbo',
+                    'score': 82,  # Confirmed FSBO = agent opportunity
+                    'county': county,
+                    'city': None,
+                })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
+def scrape_auction_com_utah():
+    """Auction.com Utah — foreclosure auctions. Distressed motivated seller."""
+    slug = 'auction-com-utah'
+    log.info(f'[{slug}] starting')
+    signals = []
+    try:
+        lines = apify_text('https://www.auction.com/residential/?state=UT')
+        for line in lines:
+            price = re.search(r'\$([\d,]+)', line)
+            addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln))', line, re.IGNORECASE)
+            auction_date = re.search(r'(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+', line)
+            if not (price or addr): continue
+            # Close auction date = higher urgency
+            score = 92 if auction_date else 78
+            signals.append({
+                'source_slug': slug,
+                'raw_owner_name': None,
+                'raw_address': addr.group(1)[:120] if addr else line[:80],
+                'raw_payload': json.dumps({
+                    'price': price.group() if price else '',
+                    'auction_date': auction_date.group() if auction_date else '',
+                    'source': 'auction_com'
+                }),
+                'signal_type': 'distressed_sale',
+                'score': score,
+                'county': 'Utah',
+                'city': None,
+            })
+    except Exception as e:
+        log.error(f'[{slug}] {e}')
+    return post_signals_batch(signals)
+
+
 SCRAPERS = [
     # ── HIGH SIGNAL — distress & life events ──
     scrape_obituaries_herald,
@@ -3411,6 +3978,21 @@ SCRAPERS = [
 
     scrape_slc_county_tax_sale,
     scrape_wasatch_county_tax_sale,
+    # ══ UTAH MARKETPLACE INTELLIGENCE — v16 ══
+    scrape_trulia_utah,
+    scrape_rentler_utah,
+    scrape_ksl_homes_market,
+    scrape_zillow_utah,
+    scrape_realtor_com_utah,
+    scrape_redfin_utah,
+    scrape_apartments_com_utah,
+    scrape_craigslist_housing_utah,
+    scrape_loopnet_utah,
+    scrape_hubzu_utah,
+    scrape_reo_utah,
+    scrape_homesnap_utah,
+    scrape_forsalebyowner_utah,
+    scrape_auction_com_utah,
     # ══ MANUS BLUEPRINT ACTIVATION — v11 ══
     scrape_ksl_renter_pipeline,
     scrape_str_exit_monitor,
@@ -3430,7 +4012,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v15 — Full source sweep, all imports fixed — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v16 — Full Utah marketplace intelligence suite — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -3459,7 +4041,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v15 — Full source sweep, all imports fixed — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v16 — Full Utah marketplace intelligence suite — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
