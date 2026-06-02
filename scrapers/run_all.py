@@ -4036,6 +4036,17 @@ if __name__ == '__main__':
         log.info(f'Cross-side convergence: {cross} marks')
     except Exception as e:
         log.error(f'cross-side convergence crashed: {e}')
+    # Refresh KPI cache — dashboard reads from cache, not live table
+    try:
+        cache_resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
+            headers={**HEADERS, 'Content-Type': 'application/json'},
+            json={}, timeout=120
+        )
+        log.info(f'KPI cache refreshed — {cache_resp.status_code}')
+    except Exception as e:
+        log.warning(f'Cache refresh failed (non-critical): {e}')
+
     log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
 
 
@@ -4057,6 +4068,17 @@ if __name__ == '__main__':
         total += conv
     except Exception as e:
         log.error(f'convergence crashed: {e}')
+    # Refresh KPI cache — dashboard reads from cache, not live table
+    try:
+        cache_resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
+            headers={**HEADERS, 'Content-Type': 'application/json'},
+            json={}, timeout=120
+        )
+        log.info(f'KPI cache refreshed — {cache_resp.status_code}')
+    except Exception as e:
+        log.warning(f'Cache refresh failed (non-critical): {e}')
+
     log.info(f'=== Done — {total} total signals (incl. {conv} convergence) ===')
 
 
