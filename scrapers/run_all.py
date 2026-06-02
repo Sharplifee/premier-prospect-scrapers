@@ -4012,7 +4012,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v16 — Full Utah marketplace intelligence suite — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v17 — KPI cache refresh, instant dashboard load — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -4041,7 +4041,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v16 — Full Utah marketplace intelligence suite — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v17 — KPI cache refresh, instant dashboard load — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
