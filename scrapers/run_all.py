@@ -3905,7 +3905,6 @@ SCRAPERS = [
     scrape_wasatch_tax_sale,
     scrape_wasatch_county_nts,
     # ── PROPERTY RECORDS ──
-    scrape_slc_assessor,
     scrape_slc_real_estate,
     scrape_slc_public_surplus,
     scrape_wasatch_public_surplus,
@@ -3979,7 +3978,6 @@ SCRAPERS = [
     scrape_slc_county_tax_sale,
     scrape_wasatch_county_tax_sale,
     # ══ UTAH MARKETPLACE INTELLIGENCE — v16 ══
-    scrape_trulia_utah,
     scrape_rentler_utah,
     scrape_ksl_homes_market,
     scrape_zillow_utah,
