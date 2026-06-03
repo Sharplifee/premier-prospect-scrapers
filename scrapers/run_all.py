@@ -9,6 +9,43 @@ from bs4 import BeautifulSoup
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('pp.scrapers')
 
+
+# ═══════════════════════════════════════════════════════════════════════
+# DATA QUALITY FILTER — strips junk owner names before any DB write
+# ═══════════════════════════════════════════════════════════════════════
+JUNK_OWNER_NAMES = {
+    'grantor','grantee','trustee','successor trustee','utah county recorder',
+    'recorder','county recorder','unknown','n/a','na','none','—','-','.',
+    'answers zoning questions','answers zoning questions for a parcel',
+    'grantee(s)','grantor(s)','deed of trust','mortgage','lender',
+}
+
+def clean_owner_name(name):
+    """Strip document field labels and junk values from owner name field."""
+    if not name:
+        return None
+    name = name.strip()
+    if not name or len(name) < 3:
+        return None
+    if name.lower() in JUNK_OWNER_NAMES:
+        return None
+    # Remove if it looks like a sentence (website UI text scraped by mistake)
+    if len(name.split()) > 6 and name[0].islower():
+        return None
+    return name
+
+def clean_address(addr):
+    """Strip non-address values."""
+    if not addr:
+        return None
+    addr = addr.strip()
+    if not addr or len(addr) < 5:
+        return None
+    junk = ['answers zoning','zoning question','n/a','unknown','—','-']
+    if any(j in addr.lower() for j in junk):
+        return None
+    return addr
+
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 APIFY_TOKEN  = os.environ.get('APIFY_TOKEN', '')
@@ -4010,7 +4047,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v17 — KPI cache refresh, instant dashboard load — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v18 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -4050,7 +4087,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v17 — KPI cache refresh, instant dashboard load — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v18 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
