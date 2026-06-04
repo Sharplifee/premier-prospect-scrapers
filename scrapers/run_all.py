@@ -3,6 +3,16 @@ Premier Prospect — GitHub Actions Scraper Runner v6
 Apify fetch + text-based parsing (no HTML/soup needed).
 24 active sources. Fully tested parsers.
 """
+# ── scraper imports ──
+# MLS scrapers — all wired, will no-op until MLS_BEARER_TOKEN is set
+try:
+    from scrapers import mls_expired_listings
+    from scrapers import mls_price_reductions
+    from scrapers import mls_high_dom
+    from scrapers import mls_withdrawn_listings
+    MLS_SCRAPERS_LOADED = True
+except ImportError:
+    MLS_SCRAPERS_LOADED = False
 import os, hashlib, logging, requests, re, json, time
 from bs4 import BeautifulSoup
 
@@ -4047,7 +4057,7 @@ SCRAPERS = [
 ]
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v18 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v19 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
@@ -4087,7 +4097,7 @@ if __name__ == '__main__':
 
 
 if __name__ == '__main__':
-    log.info(f'=== Premier Prospect v18 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
+    log.info(f'=== Premier Prospect v19 — Data quality filter, clean owner names, no junk records — {len(SCRAPERS)} sources ===')
     total = 0
     for fn in SCRAPERS:
         try:
