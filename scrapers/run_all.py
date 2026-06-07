@@ -4,6 +4,20 @@ Commercial-grade: retry logic, source health monitoring,
 correct dedup, no broken scrapers, single __main__, no undefined refs.
 """
 import os, hashlib, logging, requests, re, json, time, datetime
+
+# Real-time upgraded scrapers — HMDA 2024 live, SLCO recorder, AGRC parcels
+try:
+    from scrapers_realtime import (
+        scrape_hmda_slc_county, scrape_hmda_utah_county,
+        scrape_slco_recorder,
+        scrape_slco_lir_parcels, scrape_davis_lir_parcels, scrape_weber_lir_parcels,
+        scrape_utah_county_parcels, scrape_wasatch_parcels, scrape_summit_parcels,
+    )
+    REALTIME_LOADED = True
+except ImportError as e:
+    REALTIME_LOADED = False
+    import logging as _log
+    _log.getLogger('pp').warning(f"scrapers_realtime not loaded: {e}")
 from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -879,7 +893,13 @@ SCRAPERS = [
     ('slco-lir-parcels',            scrape_slco_lir_parcels),
     ('davis-lir-parcels',           scrape_davis_lir_parcels),
     ('weber-lir-parcels',           scrape_weber_lir_parcels),
-    # HMDA — daily only
+    # Extended AGRC parcel coverage (bonus counties)
+    ('utah-lir-parcels',            scrape_utah_county_parcels if REALTIME_LOADED else lambda: 0),
+    ('wasatch-lir-parcels',         scrape_wasatch_parcels if REALTIME_LOADED else lambda: 0),
+    ('summit-lir-parcels',          scrape_summit_parcels if REALTIME_LOADED else lambda: 0),
+    # SLCO Recorder — real-time NTS/NOD/Deed/Lien for Salt Lake County
+    ('slco-recorder-live',          scrape_slco_recorder if REALTIME_LOADED else lambda: 0),
+    # HMDA — daily only (now live 2024/2025 data)
     ('hmda-utah-county',            scrape_hmda_utah_county),
     ('hmda-slc-county',             scrape_hmda_slc_county),
     # FSBO & marketplace
