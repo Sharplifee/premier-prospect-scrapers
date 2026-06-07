@@ -3,7 +3,7 @@ name: Premier Prospect Scrapers
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 11 * * *'
 
 # Prevent GitHub from auto-pausing cron on inactive repos
 # This workflow commits a keepalive file every run, keeping the repo "active"
