@@ -1,0 +1,63 @@
+name: Pipeline Health Monitor
+
+# Checks every 8 hours that the scraper ran recently
+# If it hasn't run in 9+ hours, triggers it manually and sends SMS
+
+on:
+  schedule:
+    - cron: '30 2,8,14,20 * * *'  # 4x daily, offset from scraper cron by 2.5h
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check last scraper run and re-trigger if stale
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: |
+          # Get last scraper run timestamp
+          LAST_RUN=$(curl -s \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/runs?status=success&per_page=1" \
+            | python3 -c "import sys,json; runs=json.load(sys.stdin).get('workflow_runs',[]); print(runs[0]['updated_at'] if runs else 'never')")
+          
+          echo "Last successful scraper run: $LAST_RUN"
+          
+          # Calculate hours since last run
+          if [ "$LAST_RUN" = "never" ]; then
+            HOURS_AGO=999
+          else
+            LAST_TS=$(date -d "$LAST_RUN" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_RUN" +%s)
+            NOW_TS=$(date +%s)
+            HOURS_AGO=$(( (NOW_TS - LAST_TS) / 3600 ))
+          fi
+          
+          echo "Hours since last run: $HOURS_AGO"
+          
+          if [ "$HOURS_AGO" -gt 9 ]; then
+            echo "⚠️ Scraper stale ($HOURS_AGO hours) — triggering re-run"
+            
+            # Trigger scraper
+            curl -s -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/dispatches" \
+              -d '{"ref":"main"}'
+            
+            # SMS alert
+            if [ -n "$TWILIO_SID" ] && [ -n "$ALERT_TO" ]; then
+              curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
+                --user "$TWILIO_SID:$TWILIO_TOKEN" \
+                --data-urlencode "From=$TWILIO_FROM" \
+                --data-urlencode "To=$ALERT_TO" \
+                --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered. Check Actions."
+            fi
+          else
+            echo "✅ Scraper healthy — last run ${HOURS_AGO}h ago"
+          fi
