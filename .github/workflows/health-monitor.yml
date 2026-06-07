@@ -5,7 +5,7 @@ name: Pipeline Health Monitor
 
 on:
   schedule:
-    - cron: '30 2,8,14,20 * * *'  # 4x daily, offset from scraper cron by 2.5h
+    - cron: '0 10 * * *'  # 4x daily, offset from scraper cron by 2.5h
   workflow_dispatch:
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
           
           echo "Hours since last run: $HOURS_AGO"
           
-          if [ "$HOURS_AGO" -gt 9 ]; then
+          if [ "$HOURS_AGO" -gt 26 ]; then
             echo "⚠️ Scraper stale ($HOURS_AGO hours) — triggering re-run"
             
             # Trigger scraper
