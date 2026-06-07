@@ -1,0 +1,39 @@
+name: Keepalive Ping
+
+# Runs every 48 hours specifically to prevent GitHub from pausing cron schedules
+# GitHub pauses scheduled workflows after 60 days of repo inactivity
+# This guarantees the repo stays "active" independent of scraper runs
+
+on:
+  schedule:
+    - cron: '0 3 * * 1,4'  # Every Monday and Thursday at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Keepalive commit
+        run: |
+          git config user.name "Premier Prospect Bot"
+          git config user.email "bot@premierprospect.co"
+          echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') keepalive" >> .keepalive
+          git add .keepalive
+          git commit -m "keepalive: scheduled ping [skip ci]"
+          git push
+
+      - name: Also trigger scraper if it hasnt run in 8+ hours
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/dispatches \
+            -d '{"ref":"main"}'
+          echo "Triggered scraper run as backup"
