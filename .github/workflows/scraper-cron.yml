@@ -5,6 +5,12 @@ on:
   schedule:
     - cron: '0 6,12,18,0 * * *'
 
+# Prevent GitHub from auto-pausing cron on inactive repos
+# This workflow commits a keepalive file every run, keeping the repo "active"
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -23,6 +29,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
@@ -35,6 +43,16 @@ jobs:
       - name: Run scrapers
         id: scrapers
         run: python scrapers/run_all.py
+
+      - name: Keepalive commit (prevents GitHub cron pause)
+        if: always()
+        run: |
+          git config user.name "Premier Prospect Bot"
+          git config user.email "bot@premierpropect.co"
+          echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') run #${{ github.run_number }}" >> .keepalive
+          git add .keepalive
+          git diff --staged --quiet || git commit -m "keepalive: run #${{ github.run_number }} [skip ci]"
+          git push
 
       - name: Alert on failure
         if: failure()
