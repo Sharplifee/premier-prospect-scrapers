@@ -38,7 +38,7 @@ jobs:
 
           echo "Hours since last run: $HOURS_AGO"
 
-          if [ "$HOURS_AGO" -gt 26 ]; then
+          if [ "$HOURS_AGO" -gt 28 ]; then
             echo "Scraper stale — triggering re-run"
             curl -s -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
