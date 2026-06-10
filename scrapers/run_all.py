@@ -638,31 +638,53 @@ def scrape_marriage_records_slco():
         log.info(f'[{slug}] already ran today — skipping')
         return 0
     signals = []
-    # Utah County Land Records — search for MARRIAGE doc type (30 day window)
-    for doc_type in ['MARRIAGE LIC', 'MARRIAGE LICENSE']:
-        r = safe_get(
-            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-            params={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
-            timeout=20
-        )
-        if not r: continue
+    # Utah County land records — filter specifically for MARR doc type (KOI code)
+    # The general DocDescSearch returns all docs; KOI = kind of instrument
+    # Utah marriage licenses recorded as MARR or ML in the KOI field
+    r = safe_get(
+        'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+        params={'DocDesc': 'MARR', 'DateRange': '365', 'County': 'Utah'},
+        timeout=20
+    )
+    if r:
         soup = BeautifulSoup(r.text, 'html.parser')
-        for row in soup.select('table tr')[1:]:
+        for row in soup.select('table tr'):
             cells = [td.get_text(strip=True) for td in row.find_all('td')]
-            if len(cells) < 5: continue
+            if len(cells) < 6: continue
+            koi = cells[2] if len(cells) > 2 else ''
+            # Only KOI=MARR or ML entries
+            if koi.upper() not in ('MARR', 'ML', 'MARRIAGE LIC', 'MAR LIC'): continue
             rec_date = cells[1] if len(cells) > 1 else ''
             entry    = cells[3] if len(cells) > 3 else ''
             grantor  = cells[4] if len(cells) > 4 else ''
             grantee  = cells[5] if len(cells) > 5 else ''
-            if not entry and not grantor: continue
+            if not grantor: continue
             names = f'{grantor} & {grantee}'.strip(' &') if grantee else grantor
             signals.append({
                 'source_slug': slug, 'signal_type': 'marriage_record',
                 'score': 78, 'county': 'Utah', 'city': None,
-                'raw_owner_name': names[:100] if names else None,
+                'raw_owner_name': names[:100],
                 'raw_address': f'Entry #{entry}' if entry else names[:80],
-                'raw_payload': json.dumps({'doc_type': doc_type, 'rec_date': rec_date, 'entry': entry}),
+                'raw_payload': json.dumps({'rec_date': rec_date, 'entry': entry, 'koi': koi}),
             })
+    # Also scrape SLCO clerk marriage page for Salt Lake county signals
+    r2 = safe_get('https://slco.org/clerk/marriage/', timeout=15)
+    if r2:
+        soup2 = BeautifulSoup(r2.text, 'html.parser')
+        for table in soup2.find_all('table'):
+            for row in table.find_all('tr')[1:]:
+                cells = [td.get_text(strip=True) for td in row.find_all('td')]
+                if len(cells) >= 2 and any(cells):
+                    name = cells[0]
+                    date = cells[1] if len(cells) > 1 else ''
+                    if not name or len(name) < 3: continue
+                    signals.append({
+                        'source_slug': slug, 'signal_type': 'marriage_record',
+                        'score': 78, 'county': 'Salt Lake', 'city': None,
+                        'raw_owner_name': name[:100],
+                        'raw_address': f'SLCO Marriage: {name[:80]}',
+                        'raw_payload': json.dumps({'date': date, 'source': 'slco_clerk'}),
+                    })
     return post_batch(signals)
 
 # ─── RENTLER ─────────────────────────────────────────────────────────────────
@@ -671,42 +693,64 @@ def scrape_rentler_utah():
     log.info(f'[{slug}] starting')
     signals = []
     CITIES = [
-        ('salt-lake-city', 'Salt Lake'),
-        ('murray',         'Salt Lake'),
-        ('sandy',          'Salt Lake'),
-        ('west-jordan',    'Salt Lake'),
-        ('south-jordan',   'Salt Lake'),
-        ('draper',         'Salt Lake'),
-        ('provo',          'Utah'),
-        ('orem',           'Utah'),
-        ('lehi',           'Utah'),
-        ('ogden',          'Weber'),
+        ('salt-lake-city', 'Salt Lake'), ('murray', 'Salt Lake'),
+        ('sandy', 'Salt Lake'), ('west-jordan', 'Salt Lake'),
+        ('south-jordan', 'Salt Lake'), ('draper', 'Salt Lake'),
+        ('provo', 'Utah'), ('orem', 'Utah'), ('lehi', 'Utah'), ('ogden', 'Weber'),
     ]
+    seen = set()
+    RENTLER_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Referer': 'https://www.rentler.com/',
+    }
     for city_slug, county in CITIES:
         try:
             url = f'https://www.rentler.com/places-for-rent/ut/{city_slug}/'
-            r = safe_get(url, timeout=12)
+            r = SESSION.get(url, headers=RENTLER_HEADERS, timeout=15, allow_redirects=True)
             if not r or r.status_code != 200: continue
             soup = BeautifulSoup(r.text, 'html.parser')
-            # Rentler renders listing links server-side
-            listing_links = soup.select("a[href*='/listing/']")
-            for link in listing_links:
+            # Find all listing cards — Rentler renders server-side
+            # Primary: article tags with listing data
+            for card in soup.select('article, [class*=listing-card], [class*=rental-item], li[class*=listing]'):
+                link = card.find('a', href=re.compile(r'/listing/'))
+                if not link: continue
                 href = link.get('href', '')
                 lid_m = re.search(r'/listing/(\d+)', href)
                 if not lid_m: continue
-                listing_id = lid_m.group(1)
-                parent = link.parent
-                addr_el = (parent.select_one('.address, [class*=address]') or
-                           parent.select_one('p, span') if parent else None)
-                addr = addr_el.get_text(strip=True) if addr_el else f'Rentler listing {listing_id}'
+                lid = lid_m.group(1)
+                if lid in seen: continue
+                seen.add(lid)
+                price_el = card.select_one('[class*=price], [class*=rent], strong')
+                addr_el  = card.select_one('[class*=address], [class*=location], p')
+                price = price_el.get_text(strip=True) if price_el else ''
+                addr  = addr_el.get_text(strip=True)  if addr_el  else f'Rentler {lid}'
                 signals.append({
                     'source_slug': slug, 'signal_type': 'rental_listing',
                     'score': 55, 'county': county,
-                    'city': city_slug.replace('-', ' ').title(),
+                    'city': city_slug.replace('-',' ').title(),
                     'raw_owner_name': None,
                     'raw_address': addr[:120],
-                    'raw_payload': json.dumps({'listing_id': listing_id, 'city': city_slug, 'url': href}),
+                    'raw_payload': json.dumps({'listing_id': lid, 'price': price, 'url': href, 'city': city_slug}),
                 })
+            # Fallback: any /listing/ links anywhere on the page
+            if not any(s['raw_payload'] and city_slug in s.get('raw_payload','') for s in signals):
+                for link in soup.select('a[href*="/listing/"]'):
+                    href = link.get('href', '')
+                    lid_m = re.search(r'/listing/(\d+)', href)
+                    if not lid_m: continue
+                    lid = lid_m.group(1)
+                    if lid in seen: continue
+                    seen.add(lid)
+                    text = link.get_text(strip=True) or f'Rentler {lid}'
+                    signals.append({
+                        'source_slug': slug, 'signal_type': 'rental_listing',
+                        'score': 55, 'county': county,
+                        'city': city_slug.replace('-',' ').title(),
+                        'raw_owner_name': None,
+                        'raw_address': text[:120],
+                        'raw_payload': json.dumps({'listing_id': lid, 'url': href, 'city': city_slug}),
+                    })
         except Exception as e:
             log.warning(f'[{slug}] {city_slug}: {e}')
     return post_batch(signals)
@@ -764,32 +808,61 @@ def scrape_silicon_slopes_newhires():
         log.info(f'[{slug}] already ran today — skipping')
         return 0
     signals = []
-    SENIOR_TITLES = ['director','vp ','vice president','senior ','principal','staff engineer',
-                     'lead ','manager','architect','cto','cfo','coo','cpo','head of']
-    SOURCES = [
-        ('https://siliconslopes.com/jobs/', 'Utah'),
-        ('https://jobs.utah.gov/jobseeker/jobs/index.html', 'Utah'),
+    COUNTY_MAP = {
+        'salt lake': 'Salt Lake', 'murray': 'Salt Lake', 'sandy': 'Salt Lake',
+        'west jordan': 'Salt Lake', 'south jordan': 'Salt Lake', 'draper': 'Salt Lake',
+        'provo': 'Utah', 'orem': 'Utah', 'lehi': 'Utah', 'american fork': 'Utah',
+        'ogden': 'Weber', 'layton': 'Davis', 'bountiful': 'Davis',
+    }
+    QUERIES = [
+        ('senior engineer', 'Salt Lake City, Utah'),
+        ('director',        'Salt Lake City, Utah'),
+        ('vice president',  'Lehi, Utah'),
+        ('manager',         'Provo, Utah'),
+        ('software engineer','Salt Lake City, Utah'),
     ]
-    for url, county in SOURCES:
+    seen = set()
+    LI_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    for kw, loc in QUERIES:
         try:
-            r = safe_get(url, timeout=15)
-            if not r or r.status_code != 200: continue
+            url = (f"https://www.linkedin.com/jobs/search/?keywords={kw.replace(' ','+')}"
+                   f"&location={loc.replace(' ','%20')}&f_TP=1&position=1&pageNum=0")
+            r = SESSION.get(url, headers=LI_HEADERS, timeout=15)
+            if r.status_code != 200: continue
             soup = BeautifulSoup(r.text, 'html.parser')
-            # Grab job titles from links and headings
-            for el in soup.select('a[href*="/job"], a[href*="/jobs/"], h2, h3, h4, .job-title, .position-title'):
-                text = el.get_text(strip=True)
-                if not text or len(text) < 5 or len(text) > 200: continue
-                if any(t in text.lower() for t in SENIOR_TITLES):
-                    href = el.get('href', url) if el.name == 'a' else url
-                    signals.append({
-                        'source_slug': slug, 'signal_type': 'relocation_hire_signal',
-                        'score': 73, 'county': county, 'city': None,
-                        'raw_owner_name': None,
-                        'raw_address': text[:120],
-                        'raw_payload': json.dumps({'url': href, 'source': url}),
-                    })
+            cards = soup.select('.base-card, .job-search-card, [data-entity-urn]')
+            for card in cards:
+                urn = card.get('data-entity-urn', '')
+                job_id = re.search(r':(\d+)$', urn)
+                job_id = job_id.group(1) if job_id else None
+                link = card.select_one('a[href*="/jobs/view/"]')
+                if link:
+                    href_m = re.search(r'/jobs/view/(\d+)', link.get('href',''))
+                    if href_m: job_id = job_id or href_m.group(1)
+                if not job_id or job_id in seen: continue
+                seen.add(job_id)
+                title_el   = card.select_one('h3, .base-search-card__title, .job-card-list__title')
+                company_el = card.select_one('h4, .base-search-card__subtitle')
+                loc_el     = card.select_one('.job-search-card__location, .base-search-card__metadata span')
+                title   = title_el.get_text(strip=True)   if title_el   else kw
+                company = company_el.get_text(strip=True) if company_el else ''
+                location= loc_el.get_text(strip=True)     if loc_el     else loc
+                county  = next((v for k,v in COUNTY_MAP.items() if k in location.lower()), 'Utah')
+                city_m  = re.match(r'^([^,]+)', location)
+                city    = city_m.group(1).strip() if city_m else None
+                href    = link.get('href','') if link else ''
+                signals.append({
+                    'source_slug': slug, 'signal_type': 'relocation_hire_signal',
+                    'score': 73, 'county': county, 'city': city,
+                    'raw_owner_name': None,
+                    'raw_address': f'{company} — {title}'[:120] if company else title[:120],
+                    'raw_payload': json.dumps({'job_id': job_id, 'title': title, 'company': company, 'location': location, 'url': href}),
+                })
         except Exception as e:
-            log.warning(f'[{slug}] {url}: {e}')
+            log.warning(f'[{slug}] {kw}: {e}')
     return post_batch(signals)
 
 # ─── U-HAUL MIGRATION ─────────────────────────────────────────────────────────

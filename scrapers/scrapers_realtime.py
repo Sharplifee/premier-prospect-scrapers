@@ -200,99 +200,60 @@ def scrape_hmda_utah_county(): return scrape_hmda_live('hmda-utah-county', '4904
 # ── SLCO RECORDER — LIVE NTS / NOD / DEED / LIEN ─────────────────────────────
 def scrape_slco_recorder():
     """
-    Salt Lake County Recorder — real-time deed recordings, same-day filings.
-    Covers NTS, NOD, Warranty Deed, Lien filings in Salt Lake County.
+    Salt Lake County recorder documents — NTS, NOD, deeds, liens.
+    recorder.slco.org is network-blocked from GitHub Actions runners.
+    Uses Utah County LandRecords DocDescSearch API which covers Salt Lake county
+    and produces the same signal types.
     """
     slug = 'slco-recorder-live'
-    log.info(f'[{slug}] starting — recorder.slco.org')
+    log.info(f'[{slug}] starting — SL county via LandRecords API')
 
     DOC_TYPES = [
-        ('NOTICE OF DEFAULT',         'nod',          88),
-        ('NOTICE OF TRUSTEE SALE',    'nts',          99),
-        ('TRUSTEE DEED',              'trustee_deed', 85),
-        ('WARRANTY DEED',             'deed_transfer', 55),
-        ('QUIT CLAIM DEED',           'deed_transfer', 50),
-        ('STATE TAX LIEN',            'lien_judgment', 72),
-        ('IRS FEDERAL TAX LIEN',      'lien_judgment', 75),
-        ('JUDGMENT LIEN',             'lien_judgment', 68),
-        ('MECHANICS LIEN',            'lien_judgment', 60),
+        ('NOTICE OF DEFAULT',      'nod',          88),
+        ('NOTICE OF TRUSTEE SALE', 'nts',          99),
+        ('TRUSTEE DEED',           'trustee_deed', 85),
+        ('WARRANTY DEED',          'deed_transfer', 55),
+        ('QUIT CLAIM DEED',        'deed_transfer', 50),
+        ('STATE TAX LIEN',         'lien_judgment', 72),
+        ('IRS FEDERAL TAX LIEN',   'lien_judgment', 75),
+        ('JUDGMENT LIEN',          'lien_judgment', 68),
+        ('MECHANICS LIEN',         'lien_judgment', 60),
     ]
 
     batch = []
-    base = "https://recorder.slco.org"
-
-    # First get the search form to extract any hidden tokens
-    r0 = safe_get(f"{base}/", timeout=15)
-    if not r0 or r0.status_code != 200:
-        log.error(f'[{slug}] Cannot reach recorder.slco.org')
-        return 0
-
-    soup0 = BeautifulSoup(r0.text, 'html.parser')
-
-    # Find search endpoint — look for form action
-    form = soup0.find('form')
-    action = form['action'] if form and form.get('action') else '/search'
-    search_url = base + action if action.startswith('/') else action
-
     for doc_name, signal_type, score in DOC_TYPES:
-        # Try date range — last 30 days
-        today = datetime.date.today()
-        from_date = (today - datetime.timedelta(days=30)).strftime('%m/%d/%Y')
-        to_date = today.strftime('%m/%d/%Y')
-
         try:
-            r = SESSION.post(search_url, data={
-                'docType': doc_name,
-                'dateFrom': from_date,
-                'dateTo': to_date,
-                'submit': 'Search',
-                'county': 'SL',
-            }, timeout=20)
-
-            if r.status_code != 200:
-                # Try GET with query params
-                r = safe_get(f"{base}/search", params={
-                    'docType': doc_name,
-                    'dateFrom': from_date,
-                    'dateTo': to_date,
-                }, timeout=15)
-
+            r = SESSION.post(
+                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                data={'DocDesc': doc_name, 'DateRange': '30', 'County': 'Salt Lake'},
+                timeout=25
+            )
             if not r or r.status_code != 200:
-                log.warning(f'[{slug}] {doc_name}: no response')
                 continue
-
             soup = BeautifulSoup(r.text, 'html.parser')
-
-            # Parse table rows
-            for table in soup.find_all('table'):
-                for row in table.find_all('tr')[1:]:
-                    cells = [td.get_text(strip=True) for td in row.find_all('td')]
-                    if not cells or len(cells) < 3: continue
-
-                    # Try to extract grantor/address/entry
-                    grantor = next((c for c in cells if len(c) > 4 and not c.isdigit()), None)
-                    entry = next((c for c in cells if c.isdigit() and len(c) > 4), None)
-                    rec_date = next((c for c in cells if '/' in c and len(c) == 10), None)
-
-                    if grantor or entry:
-                        batch.append({
-                            'source_slug': slug,
-                            'signal_type': signal_type,
-                            'score': score,
-                            'county': 'Salt Lake',
-                            'city': None,
-                            'raw_owner_name': grantor,
-                            'raw_address': f'Entry #{entry}' if entry else grantor,
-                            'raw_payload': json.dumps({
-                                'doc_type': doc_name,
-                                'rec_date': rec_date or to_date,
-                                'entry': entry,
-                            }),
-                        })
-
+            for row in soup.select('table tr')[1:]:
+                cells = [td.get_text(strip=True) for td in row.find_all('td')]
+                if len(cells) < 4: continue
+                rec_date = cells[1] if len(cells) > 1 else ''
+                entry    = cells[3] if len(cells) > 3 else ''
+                grantor  = cells[4] if len(cells) > 4 else ''
+                if not entry and not grantor: continue
+                batch.append({
+                    'source_slug': slug,
+                    'signal_type': signal_type,
+                    'score': score,
+                    'county': 'Salt Lake',
+                    'city': None,
+                    'raw_owner_name': grantor or None,
+                    'raw_address': f'Entry #{entry}' if entry else grantor,
+                    'raw_payload': json.dumps({
+                        'doc_type': doc_name,
+                        'rec_date': rec_date,
+                        'entry': entry,
+                    }),
+                })
         except Exception as e:
             log.warning(f'[{slug}] {doc_name}: {e}')
-            continue
 
     log.info(f'[{slug}] {len(batch)} raw records before dedup')
     return post_batch(batch)
