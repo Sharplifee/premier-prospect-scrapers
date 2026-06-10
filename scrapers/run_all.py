@@ -501,19 +501,27 @@ def scrape_obituaries_enrichment():
     signals = []
     for url, county in [
         ('https://www.heraldextra.com/obituaries/', 'Utah'),
+        ('https://www.legacy.com/obituaries/local/utah', 'Utah'),
         ('https://www.sltrib.com/obituaries/', 'Salt Lake'),
     ]:
         r = safe_get(url, timeout=15)
         if not r: continue
         soup = BeautifulSoup(r.text, 'html.parser')
-        for card in soup.select('.obit-card, .obituary-listing, article, .card'):
-            name_el = card.select_one('h2, h3, .name')
+        # heraldextra uses <article> tags; legacy uses .card-obit; sltrib uses article
+        for card in soup.select('article, .card-obit, .obituary-listing, .obit-card'):
+            name_el = card.select_one('h1, h2, h3, .name, .obit-name, [class*=name]')
             name = name_el.get_text(strip=True) if name_el else ''
             if not name or len(name) < 3: continue
+            date_el = card.select_one('time, .date, [class*=date]')
+            pub_date = date_el.get_text(strip=True) if date_el else ''
+            link_el = card.select_one('a[href]')
+            href = link_el['href'] if link_el else url
             signals.append({
-                'source_slug': slug, 'signal_type': 'obituary', 'score': 40,
+                'source_slug': slug, 'signal_type': 'obituary', 'score': 62,
                 'county': county, 'city': None,
-                'raw_owner_name': name, 'raw_address': f'Obituary: {name}',
+                'raw_owner_name': name,
+                'raw_address': f'Obituary: {name}',
+                'raw_payload': json.dumps({'name': name, 'pub_date': pub_date, 'url': href}),
             })
     return post_batch(signals)
 
@@ -630,22 +638,31 @@ def scrape_marriage_records_slco():
         log.info(f'[{slug}] already ran today — skipping')
         return 0
     signals = []
-    BASE = 'https://www.utahcounty.gov/LandRecords'
-    r = safe_get(f'{BASE}/DocDescSearchForm.asp', params={'avdescription':'MARRIAGE','Submit':'Search'}, timeout=15)
-    if not r: return 0
-    soup = BeautifulSoup(r.text, 'html.parser')
-    for t in soup.find_all('table'):
-        for row in t.find_all('tr')[1:]:
-            cols = [td.get_text(strip=True) for td in row.find_all('td')]
-            if not cols or len(cols) < 3: continue
-            names = cols[2] if len(cols) > 2 else ''
-            entry = cols[3] if len(cols) > 3 else ''
-            if names and 'MARRIAGE' in ' '.join(cols).upper():
-                signals.append({
-                    'source_slug': slug, 'signal_type': 'marriage_record',
-                    'score': 55, 'county': 'Utah', 'city': None,
-                    'raw_owner_name': names[:80], 'raw_address': f'Entry #{entry}' if entry else names[:80],
-                })
+    # Utah County Land Records — search for MARRIAGE doc type (30 day window)
+    for doc_type in ['MARRIAGE LIC', 'MARRIAGE LICENSE']:
+        r = safe_get(
+            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+            params={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
+            timeout=20
+        )
+        if not r: continue
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for row in soup.select('table tr')[1:]:
+            cells = [td.get_text(strip=True) for td in row.find_all('td')]
+            if len(cells) < 5: continue
+            rec_date = cells[1] if len(cells) > 1 else ''
+            entry    = cells[3] if len(cells) > 3 else ''
+            grantor  = cells[4] if len(cells) > 4 else ''
+            grantee  = cells[5] if len(cells) > 5 else ''
+            if not entry and not grantor: continue
+            names = f'{grantor} & {grantee}'.strip(' &') if grantee else grantor
+            signals.append({
+                'source_slug': slug, 'signal_type': 'marriage_record',
+                'score': 78, 'county': 'Utah', 'city': None,
+                'raw_owner_name': names[:100] if names else None,
+                'raw_address': f'Entry #{entry}' if entry else names[:80],
+                'raw_payload': json.dumps({'doc_type': doc_type, 'rec_date': rec_date, 'entry': entry}),
+            })
     return post_batch(signals)
 
 # ─── RENTLER ─────────────────────────────────────────────────────────────────
@@ -653,23 +670,45 @@ def scrape_rentler_utah():
     slug = 'rentler-utah'
     log.info(f'[{slug}] starting')
     signals = []
-    for url, county in [
-        ('https://rentler.com/search?location=Salt+Lake+City%2C+UT&propertyType=house', 'Salt Lake'),
-        ('https://rentler.com/search?location=Provo%2C+UT&propertyType=house', 'Utah'),
-    ]:
-        lines = apify_text(url)
-        for line in lines:
-            price = re.search(r'\$(\d[\d,]+)/mo', line, re.IGNORECASE)
-            addr = re.search(r'(\d+\s+\w[\w\s]+(?:St|Ave|Dr|Rd|Blvd|Way|Ln)\b)', line, re.IGNORECASE)
-            if price and addr:
-                rent = int(price.group(1).replace(',',''))
-                if 500 < rent < 10000:
-                    signals.append({
-                        'source_slug': slug, 'signal_type': 'rental_listing',
-                        'score': 72 if rent >= 2000 else 55, 'county': county, 'city': None,
-                        'raw_owner_name': None, 'raw_address': addr.group(1)[:120],
-                        'raw_payload': json.dumps({'rent': rent}),
-                    })
+    CITIES = [
+        ('salt-lake-city', 'Salt Lake'),
+        ('murray',         'Salt Lake'),
+        ('sandy',          'Salt Lake'),
+        ('west-jordan',    'Salt Lake'),
+        ('south-jordan',   'Salt Lake'),
+        ('draper',         'Salt Lake'),
+        ('provo',          'Utah'),
+        ('orem',           'Utah'),
+        ('lehi',           'Utah'),
+        ('ogden',          'Weber'),
+    ]
+    for city_slug, county in CITIES:
+        try:
+            url = f'https://www.rentler.com/places-for-rent/ut/{city_slug}/'
+            r = safe_get(url, timeout=12)
+            if not r or r.status_code != 200: continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Rentler renders listing links server-side
+            listing_links = soup.select("a[href*='/listing/']")
+            for link in listing_links:
+                href = link.get('href', '')
+                lid_m = re.search(r'/listing/(\d+)', href)
+                if not lid_m: continue
+                listing_id = lid_m.group(1)
+                parent = link.parent
+                addr_el = (parent.select_one('.address, [class*=address]') or
+                           parent.select_one('p, span') if parent else None)
+                addr = addr_el.get_text(strip=True) if addr_el else f'Rentler listing {listing_id}'
+                signals.append({
+                    'source_slug': slug, 'signal_type': 'rental_listing',
+                    'score': 55, 'county': county,
+                    'city': city_slug.replace('-', ' ').title(),
+                    'raw_owner_name': None,
+                    'raw_address': addr[:120],
+                    'raw_payload': json.dumps({'listing_id': listing_id, 'city': city_slug, 'url': href}),
+                })
+        except Exception as e:
+            log.warning(f'[{slug}] {city_slug}: {e}')
     return post_batch(signals)
 
 # ─── REALTOR MARKET DATA → goes to pp_market_data, not signals ───────────────
@@ -724,22 +763,33 @@ def scrape_silicon_slopes_newhires():
     if _hmda_already_run_today(slug):
         log.info(f'[{slug}] already ran today — skipping')
         return 0
-    # LinkedIn requires auth — use public job board feeds instead
     signals = []
-    JOB_FEEDS = [
-        ('https://jobs.utah.gov/jobseeker/jobs/jobdetails.html?source=siliconslopes', 'Utah'),
-        ('https://www.builtinnyc.com/jobs?location=Salt+Lake+City%2C+UT', 'Salt Lake'),
+    SENIOR_TITLES = ['director','vp ','vice president','senior ','principal','staff engineer',
+                     'lead ','manager','architect','cto','cfo','coo','cpo','head of']
+    SOURCES = [
+        ('https://siliconslopes.com/jobs/', 'Utah'),
+        ('https://jobs.utah.gov/jobseeker/jobs/index.html', 'Utah'),
     ]
-    senior_titles = ['director','vp','vice president','senior','principal','staff','lead','manager','architect']
-    for url, county in JOB_FEEDS:
-        lines = apify_text(url)
-        for line in lines:
-            if any(t in line.lower() for t in senior_titles) and len(line) > 10:
-                signals.append({
-                    'source_slug': slug, 'signal_type': 'relocation_hire_signal',
-                    'score': 70, 'county': county, 'city': None,
-                    'raw_owner_name': None, 'raw_address': line[:120],
-                })
+    for url, county in SOURCES:
+        try:
+            r = safe_get(url, timeout=15)
+            if not r or r.status_code != 200: continue
+            soup = BeautifulSoup(r.text, 'html.parser')
+            # Grab job titles from links and headings
+            for el in soup.select('a[href*="/job"], a[href*="/jobs/"], h2, h3, h4, .job-title, .position-title'):
+                text = el.get_text(strip=True)
+                if not text or len(text) < 5 or len(text) > 200: continue
+                if any(t in text.lower() for t in SENIOR_TITLES):
+                    href = el.get('href', url) if el.name == 'a' else url
+                    signals.append({
+                        'source_slug': slug, 'signal_type': 'relocation_hire_signal',
+                        'score': 73, 'county': county, 'city': None,
+                        'raw_owner_name': None,
+                        'raw_address': text[:120],
+                        'raw_payload': json.dumps({'url': href, 'source': url}),
+                    })
+        except Exception as e:
+            log.warning(f'[{slug}] {url}: {e}')
     return post_batch(signals)
 
 # ─── U-HAUL MIGRATION ─────────────────────────────────────────────────────────
@@ -787,6 +837,49 @@ def scrape_marketplace(slug, url, county, signal_type, score):
                 'county': county, 'city': None, 'raw_owner_name': None,
                 'raw_address': addr.group(1)[:120] if addr else line[:80],
                 'raw_payload': json.dumps({'price': price.group() if price else ''}),
+            })
+    return post_batch(signals)
+
+def scrape_zillow_market_signals():
+    slug = 'zillow-market-signals'
+    log.info(f'[{slug}] starting')
+    if _hmda_already_run_today(slug):
+        log.info(f'[{slug}] already ran today — skipping')
+        return 0
+    import csv, io
+    signals = []
+    UTAH_METROS = {'salt lake city', 'provo', 'ogden', 'st. george', 'logan'}
+    METRO_COUNTY = {
+        'salt lake city': 'Salt Lake', 'ogden': 'Weber',
+        'provo': 'Utah', 'st. george': 'Washington', 'logan': 'Cache',
+    }
+    DATASETS = {
+        'zhvi': 'https://files.zillowstatic.com/research/public_csvs/zhvi/Metro_zhvi_uc_sfrcondo_tier_0.33_0.67_sm_sa_month.csv',
+        'days_on_market': 'https://files.zillowstatic.com/research/public_csvs/days_on_market/Metro_days_on_mkt_uc_sfrcondo_sm_week.csv',
+    }
+    for dataset, url in DATASETS.items():
+        r = safe_get(url, timeout=30)
+        if not r or r.status_code != 200: continue
+        reader = csv.DictReader(io.StringIO(r.text))
+        rows = list(reader)
+        if not rows: continue
+        date_cols = sorted([c for c in rows[0].keys() if re.match(r'\d{4}-\d{2}', c)])
+        if not date_cols: continue
+        latest = date_cols[-1]
+        for row in rows:
+            state = row.get('StateName', '').lower()
+            region = row.get('RegionName', '').lower()
+            if state not in ('ut', 'utah') and not any(m in region for m in UTAH_METROS):
+                continue
+            value = row.get(latest, '')
+            if not value: continue
+            county = next((METRO_COUNTY[m] for m in UTAH_METROS if m in region), 'Utah')
+            signals.append({
+                'source_slug': slug, 'signal_type': 'market_price_signal',
+                'score': 50, 'county': county, 'city': None,
+                'raw_owner_name': None,
+                'raw_address': f"{row.get('RegionName','')} | {dataset} | {latest}: {value}",
+                'raw_payload': json.dumps({'dataset': dataset, 'region': row.get('RegionName'), 'date': latest, 'value': value}),
             })
     return post_batch(signals)
 
@@ -876,6 +969,69 @@ def scrape_dnc_check():
         return dnc_compliance_check.run()
     except ImportError: return 0
 
+# ─── UVHBA DIRECTORY ─────────────────────────────────────────────────────────
+def scrape_uvhba_directory():
+    slug = 'uvhba-directory'
+    log.info(f'[{slug}] starting')
+    if _hmda_already_run_today(slug):
+        log.info(f'[{slug}] already ran today — skipping')
+        return 0
+    signals = []
+    for url in ['https://www.uvhba.com/members/', 'https://www.uvhba.com/member-directory/']:
+        r = safe_get(url, timeout=15)
+        if not r or r.status_code != 200: continue
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for el in soup.select('h2, h3, h4, .member-name, .company-name, .name, strong, b'):
+            name = el.get_text(strip=True)
+            if not name or len(name) < 4 or len(name) > 120: continue
+            if any(w in name.lower() for w in ['menu','search','contact','home','about','member','protect','preserve','promote']): continue
+            parent = el.parent
+            phone_el = parent.select_one('a[href^="tel:"], .phone') if parent else None
+            phone = phone_el.get_text(strip=True) if phone_el else None
+            signals.append({
+                'source_slug': slug, 'signal_type': 'builder_directory',
+                'score': 60, 'county': 'Utah', 'city': None,
+                'raw_owner_name': name, 'raw_address': name,
+                'raw_payload': json.dumps({'phone': phone, 'source_url': url}),
+            })
+        if signals: break
+    return post_batch(signals)
+
+# ─── COMPARABLE SALES SLCO ────────────────────────────────────────────────────
+def scrape_comparable_sales_slco():
+    slug = 'comparable-sales-slco'
+    log.info(f'[{slug}] starting')
+    if _hmda_already_run_today(slug):
+        log.info(f'[{slug}] already ran today — skipping')
+        return 0
+    import csv, io
+    signals = []
+    url = 'https://files.zillowstatic.com/research/public_csvs/median_sale_price/Metro_median_sale_price_uc_sfrcondo_sm_month.csv'
+    r = safe_get(url, timeout=30)
+    if not r or r.status_code != 200: return 0
+    reader = csv.DictReader(io.StringIO(r.text))
+    rows = list(reader)
+    if not rows: return 0
+    date_cols = sorted([c for c in rows[0].keys() if re.match(r'\d{4}-\d{2}', c)])
+    if not date_cols: return 0
+    latest = date_cols[-1]
+    UTAH_METROS = {'salt lake city': 'Salt Lake', 'provo': 'Utah', 'ogden': 'Weber', 'st. george': 'Washington', 'logan': 'Cache'}
+    for row in rows:
+        state = row.get('StateName', '').lower()
+        region = row.get('RegionName', '').lower()
+        if state not in ('ut', 'utah') and not any(m in region for m in UTAH_METROS): continue
+        value = row.get(latest, '')
+        if not value: continue
+        county = next((UTAH_METROS[m] for m in UTAH_METROS if m in region), 'Utah')
+        signals.append({
+            'source_slug': slug, 'signal_type': 'comparable_sale',
+            'score': 55, 'county': county, 'city': None,
+            'raw_owner_name': None,
+            'raw_address': f"{row.get('RegionName','')} | Median sale: ${value} | {latest}",
+            'raw_payload': json.dumps({'region': row.get('RegionName'), 'date': latest, 'median_sale_price': value}),
+        })
+    return post_batch(signals)
+
 # ── SCRAPER REGISTRY ──────────────────────────────────────────────────────────
 # Only scrapers that actually work and produce real data
 SCRAPERS = [
@@ -920,8 +1076,12 @@ SCRAPERS = [
     ('marriage-records-slco',       scrape_marriage_records_slco),
     ('silicon-slopes-newhires',     scrape_silicon_slopes_newhires),
     ('uhaul-penske-monitor',        scrape_uhaul_penske_monitor),
+    # Buyer signals
+    ('uvhba-directory',             scrape_uvhba_directory),
+    ('comparable-sales-slco',       scrape_comparable_sales_slco),
     # Market data → pp_market_data
     ('realtor-market-utah',         scrape_realtor_market_utah),
+    ('zillow-market-signals',       scrape_zillow_market_signals),
     ('zillow-home-values',          scrape_zillow_home_values),
     # MLS (no-op until token)
     ('mls-expired-listings',        scrape_mls_expired),

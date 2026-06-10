@@ -315,10 +315,9 @@ def scrape_agrc_parcels(slug, county_name, county_slug, county_label):
         try:
             r = safe_get(base, params={
                 'where': '1=1',
-                'outFields': 'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE,ACREAGE,OWN_TYPE',
+                'outFields': 'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE,PRIMARY_RES,PROP_CLASS,BUILT_YR',
                 'resultRecordCount': page_size,
                 'resultOffset': offset,
-                'orderByFields': 'OBJECTID DESC',
                 'f': 'json'
             }, timeout=25)
 
@@ -341,14 +340,17 @@ def scrape_agrc_parcels(slug, county_name, county_slug, county_label):
         addr = a.get('PARCEL_ADD', '')
         city = a.get('PARCEL_CITY', '')
         val = a.get('TOTAL_MKT_VALUE', 0) or 0
-        own_type = a.get('OWN_TYPE', '')
-        parcel_id = a.get('PARCEL_ID', '')
+        primary_res = a.get('PRIMARY_RES', 'Y')
+        prop_class  = a.get('PROP_CLASS', '')
+        built_yr    = a.get('BUILT_YR', 0) or 0
+        parcel_id   = a.get('PARCEL_ID', '')
 
         if not addr: continue
-        # Flag non-owner-occupied or low-value parcels — distress indicators
+        # Score: non-primary, low value, or older build = higher distress signal
         score = 40
-        if own_type and own_type.upper() not in ('OWNER OCCUPIED', 'PRIMARY'): score = 52
-        if val and val < 50000: score = 58  # likely distressed or deferred maintenance
+        if primary_res == 'N': score = 52            # non-owner-occupied
+        if val and val < 50000: score = 58           # low market value
+        if built_yr and built_yr < 1970: score = max(score, 50)
 
         full_addr = f"{addr}, {city}".strip(', ') if city else addr
         batch.append({
@@ -359,7 +361,13 @@ def scrape_agrc_parcels(slug, county_name, county_slug, county_label):
             'city': city or None,
             'raw_owner_name': None,
             'raw_address': full_addr,
-            'raw_payload': json.dumps({'parcel_id': parcel_id, 'market_value': val, 'own_type': own_type}),
+            'raw_payload': json.dumps({
+                'parcel_id': parcel_id,
+                'market_value': val,
+                'primary_res': primary_res,
+                'prop_class': prop_class,
+                'built_yr': built_yr,
+            }),
         })
 
     return post_batch(batch)
