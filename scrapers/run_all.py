@@ -956,12 +956,135 @@ def scrape_zillow_market_signals():
             })
     return post_batch(signals)
 
-def scrape_trulia_utah():       return scrape_marketplace('trulia-utah','https://www.trulia.com/UT/','Utah','competitor_listing',45)
-def scrape_hubzu_utah():        return scrape_marketplace('hubzu-utah','https://www.hubzu.com/search?stateId=UT','Utah','distressed_sale',85)
-def scrape_reo_utah():          return scrape_marketplace('reo-utah','https://www.reo.com/listings/utah','Utah','distressed_sale',82)
-def scrape_auction_com_utah():  return scrape_marketplace('auction-com-utah','https://www.auction.com/residential/?state=UT','Utah','distressed_sale',78)
-def scrape_loopnet_utah():      return scrape_marketplace('loopnet-utah','https://www.loopnet.com/search/multifamily-apartment-buildings/utah/for-sale/','Utah','competitor_listing',65)
-def scrape_forsalebyowner_utah(): return scrape_marketplace('forsalebyowner-utah','https://www.forsalebyowner.com/real-estate/utah/','Utah','fsbo',82)
+# Bot-blocked sources replaced with confirmed-working Zillow Research CSVs
+# and Utah public sources. All 6 slugs kept so run_log history is preserved.
+ZILLOW_METRO_MAP = {
+    'salt lake city': 'Salt Lake', 'ogden': 'Weber',
+    'provo': 'Utah', 'st. george': 'Washington', 'logan': 'Cache',
+}
+ZILLOW_UTAH_METROS = set(ZILLOW_METRO_MAP.keys())
+
+def _zillow_csv_signals(slug, url, signal_type, score, value_label):
+    import csv as _csv, io as _io
+    signals = []
+    r = safe_get(url, timeout=30)
+    if not r or r.status_code != 200: return signals
+    reader = _csv.DictReader(_io.StringIO(r.text))
+    rows = list(reader)
+    if not rows: return signals
+    date_cols = sorted([c for c in rows[0].keys() if re.match(r'\d{4}-\d{2}', c)])
+    if not date_cols: return signals
+    latest = date_cols[-1]
+    for row in rows:
+        state  = row.get('StateName', '').lower()
+        region = row.get('RegionName', '').lower()
+        if state not in ('ut','utah') and not any(m in region for m in ZILLOW_UTAH_METROS): continue
+        value = row.get(latest, '')
+        if not value: continue
+        county = next((v for k,v in ZILLOW_METRO_MAP.items() if k in region), 'Utah')
+        signals.append({
+            'source_slug': slug, 'signal_type': signal_type,
+            'score': score, 'county': county, 'city': None,
+            'raw_owner_name': None,
+            'raw_address': f"{row.get('RegionName','')} | {value_label}: {value} | {latest}",
+            'raw_payload': json.dumps({'region': row.get('RegionName'), 'date': latest, 'value': value}),
+        })
+    return signals
+
+def scrape_trulia_utah():
+    slug = 'trulia-utah'
+    log.info(f'[{slug}] starting — Zillow new listings (Trulia CF-blocked)')
+    if _hmda_already_run_today(slug): return 0
+    return post_batch(_zillow_csv_signals(slug,
+        'https://files.zillowstatic.com/research/public_csvs/new_listings/Metro_new_listings_uc_sfrcondo_sm_month.csv',
+        'market_new_listings', 45, 'new_listings'))
+
+def scrape_hubzu_utah():
+    slug = 'hubzu-utah'
+    log.info(f'[{slug}] starting — Zillow inventory (Hubzu bot-blocked)')
+    if _hmda_already_run_today(slug): return 0
+    return post_batch(_zillow_csv_signals(slug,
+        'https://files.zillowstatic.com/research/public_csvs/invt_fs/Metro_invt_fs_uc_sfrcondo_sm_week.csv',
+        'market_inventory', 45, 'for_sale_inventory'))
+
+def scrape_reo_utah():
+    slug = 'reo-utah'
+    log.info(f'[{slug}] starting — Zillow median sale price (REO.com 503)')
+    if _hmda_already_run_today(slug): return 0
+    return post_batch(_zillow_csv_signals(slug,
+        'https://files.zillowstatic.com/research/public_csvs/median_sale_price/Metro_median_sale_price_uc_sfrcondo_sm_month.csv',
+        'market_comp_sale', 50, 'median_sale_price'))
+
+def scrape_auction_com_utah():
+    slug = 'auction-com-utah'
+    log.info(f'[{slug}] starting — Zillow pct sold above list (auction.com CF-blocked)')
+    if _hmda_already_run_today(slug): return 0
+    return post_batch(_zillow_csv_signals(slug,
+        'https://files.zillowstatic.com/research/public_csvs/pct_sold_above_list/Metro_pct_sold_above_list_uc_sfrcondo_sm_month.csv',
+        'market_heat_signal', 50, 'pct_sold_above_list'))
+
+def scrape_loopnet_utah():
+    """Loopnet is 403-blocked. Uses Utah DWS employer WARN filings instead."""
+    slug = 'loopnet-utah'
+    log.info(f'[{slug}] starting — Utah DWS WARN filings (Loopnet 403)')
+    if _hmda_already_run_today(slug): return 0
+    r = safe_get('https://jobs.utah.gov/employer/business/warnnotices.html', timeout=15)
+    if not r: return 0
+    signals = []
+    soup = BeautifulSoup(r.text, 'html.parser')
+    for row in soup.select('table tr')[1:]:
+        cells = row.select('td')
+        if len(cells) < 3: continue
+        company = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+        city    = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+        workers = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+        date    = cells[0].get_text(strip=True)
+        if not company: continue
+        county = 'Utah' if city.lower() in ['provo','orem','lehi','american fork','payson'] else 'Salt Lake'
+        signals.append({
+            'source_slug': slug, 'signal_type': 'employer_filing',
+            'score': 48, 'county': county, 'city': city,
+            'raw_owner_name': company, 'raw_address': f'{company}, {city}',
+            'raw_payload': json.dumps({'workers': workers, 'date': date}),
+        })
+    return post_batch(signals)
+
+def scrape_forsalebyowner_utah():
+    """FSBO.com is JS-rendered. Uses Craigslist real estate instead (confirmed working)."""
+    slug = 'forsalebyowner-utah'
+    log.info(f'[{slug}] starting — Craigslist RE (FSBO.com JS-blocked)')
+    import urllib.request as _ur
+    signals = []
+    SOURCES = [
+        ('https://saltlake.craigslist.org/search/reo?sort=date&limit=120', 'Salt Lake'),
+        ('https://provo.craigslist.org/search/reo?sort=date&limit=120', 'Utah'),
+        ('https://ogden.craigslist.org/search/reo?sort=date&limit=60', 'Weber'),
+    ]
+    for url, county in SOURCES:
+        try:
+            req = _ur.Request(url, headers={'User-Agent': SESSION.headers['User-Agent']})
+            with _ur.urlopen(req, timeout=20) as resp:
+                html = resp.read()
+            soup = BeautifulSoup(html, 'html.parser')
+            for item in soup.select('li.cl-static-search-result, .result-row, li[data-pid]'):
+                title_el = item.select_one('.title, a.posting-title, .result-title')
+                title = title_el.get_text(strip=True) if title_el else ''
+                price_el = item.select_one('.price, .result-price')
+                price = price_el.get_text(strip=True) if price_el else ''
+                link_el = item.find('a', href=True)
+                link = link_el['href'] if link_el else url
+                if not link.startswith('http'): link = url.split('/search')[0] + link
+                full = f'{title} {price}'.strip()
+                if full and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house']):
+                    signals.append({
+                        'source_slug': slug, 'signal_type': 'fsbo',
+                        'score': 72, 'county': county, 'city': None,
+                        'raw_owner_name': None, 'raw_address': full[:200],
+                        'raw_url': link,
+                    })
+        except Exception as e:
+            log.warning(f'[{slug}] {url}: {e}')
+    return post_batch(signals)
 
 # ─── MARKET DATA SOURCES ─────────────────────────────────────────────────────
 def scrape_zillow_home_values():
