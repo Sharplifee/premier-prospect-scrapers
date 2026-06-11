@@ -220,42 +220,70 @@ def scrape_slco_recorder():
         ('MECHANICS LIEN',         'lien_judgment', 60),
     ]
 
+    # DocDescSearch ignores the DocDesc param — returns all recent docs.
+    # Real fix: pull all docs once per county, filter by KOI column.
+    KOI_MAP = {
+        'N TR D': ('nts',          99),
+        'NTS':    ('nts',          99),
+        'N OF D': ('nod',          88),
+        'NOD':    ('nod',          88),
+        'TR D':   ('trustee_deed', 85),
+        'WD':     ('deed_transfer', 55),
+        'C WD':   ('deed_transfer', 52),
+        'Q CD':   ('deed_transfer', 58),
+        'T LN':   ('lien_judgment', 72),
+        'F T LN': ('lien_judgment', 75),
+        'J LN':   ('lien_judgment', 68),
+        'M LN':   ('lien_judgment', 60),
+    }
+    SKIP_GRANTORS = {'MERS','MORTGAGE ELECTRONIC','FEDERAL','FNMA','FHLMC',
+                     'FANNIE','FREDDIE','HUD','USA ','U.S.','LLC BY'}
+
     batch = []
-    for doc_name, signal_type, score in DOC_TYPES:
+    for county_name in ['Salt Lake', 'Utah']:
         try:
             r = SESSION.post(
                 'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-                data={'DocDesc': doc_name, 'DateRange': '30', 'County': 'Salt Lake'},
-                timeout=25
+                data={'DocDesc': '', 'DateRange': '3', 'County': county_name},
+                timeout=30
             )
-            if not r or r.status_code != 200:
-                continue
+            if not r or r.status_code != 200: continue
             soup = BeautifulSoup(r.text, 'html.parser')
-            for row in soup.select('table tr')[1:]:
+            header_passed = False
+            for row in soup.select('table tr'):
                 cells = [td.get_text(strip=True) for td in row.find_all('td')]
-                if len(cells) < 4: continue
+                if not cells: continue
+                if 'Rec Date' in cells or 'KOI' in cells:
+                    header_passed = True
+                    continue
+                if not header_passed: continue
+                if len(cells) < 5: continue
                 rec_date = cells[1] if len(cells) > 1 else ''
+                koi      = cells[2].strip().upper() if len(cells) > 2 else ''
                 entry    = cells[3] if len(cells) > 3 else ''
                 grantor  = cells[4] if len(cells) > 4 else ''
-                if not entry and not grantor: continue
+                grantee  = cells[5] if len(cells) > 5 else ''
+                if koi not in KOI_MAP: continue
+                if not rec_date or not grantor: continue
+                if any(w in grantor.upper() for w in SKIP_GRANTORS): continue
+                signal_type, score = KOI_MAP[koi]
                 batch.append({
                     'source_slug': slug,
                     'signal_type': signal_type,
                     'score': score,
-                    'county': 'Salt Lake',
+                    'county': county_name,
                     'city': None,
-                    'raw_owner_name': grantor or None,
-                    'raw_address': f'Entry #{entry}' if entry else grantor,
+                    'raw_owner_name': grantor[:100],
+                    'raw_address': f'Entry #{entry}' if entry else grantor[:80],
                     'raw_payload': json.dumps({
-                        'doc_type': doc_name,
-                        'rec_date': rec_date,
-                        'entry': entry,
+                        'koi': koi, 'rec_date': rec_date,
+                        'entry': entry, 'grantee': grantee[:80],
                     }),
                 })
         except Exception as e:
-            log.warning(f'[{slug}] {doc_name}: {e}')
+            log.warning(f'[{slug}] {county_name}: {e}')
 
-    log.info(f'[{slug}] {len(batch)} raw records before dedup')
+    log.info(f'[{slug}] {len(batch)} records')
     return post_batch(batch)
 
 # ── UTAH AGRC STATEWIDE PARCELS — EXPAND LIR COVERAGE ────────────────────────
