@@ -189,6 +189,16 @@ def _send_sms_alert(msg):
     except Exception as e:
         log.warning(f"SMS alert failed: {e}")
 
+# Dedicated headers for pp_run_log inserts — no Prefer resolution header
+# (pp_run_log has no unique constraint; resolution=ignore-duplicates from HEADERS
+# causes Supabase to silently drop rows or columns on tables without a conflict target)
+HEADERS_LOG = {
+    'Authorization': f'Bearer {SUPABASE_KEY}',
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_KEY,
+    'Prefer': 'return=minimal',
+}
+
 def write_run_log(slug, count, status='success', error=None, duration=None, skipped=0):
     try:
         payload = {
@@ -202,7 +212,7 @@ def write_run_log(slug, count, status='success', error=None, duration=None, skip
             'records_skipped': skipped,
         }
         SESSION.post(f"{SUPABASE_URL}/rest/v1/pp_run_log",
-                    json=payload, headers=HEADERS, timeout=5)
+                    json=payload, headers=HEADERS_LOG, timeout=5)
     except: pass
     # Per-source failure SMS alert
     if status == 'error' and error:
@@ -237,8 +247,10 @@ def check_health(slug, count):
         'hmda-slc-county','hmda-utah-county','warn-act-utah','silicon-slopes-newhires',
         'realtor-market-utah','zillow-market-signals','zillow-home-values',
         'school-district-enrollment','marriage-records-slco','comparable-sales-slco',
-        'loopnet-utah','uvhba-directory','uhaul-penske-monitor',
+        'loopnet-utah','uhaul-penske-monitor',
         'trulia-utah','hubzu-utah','reo-utah','auction-com-utah',
+        # uvhba-directory removed — now uses Census BPS (daily-gated internally)
+        # but we want health alerts if it produces 0 on its first run of the day
     }
     if count == 0 and slug in GATED_SLUGS:
         return  # daily-skip gate fired — not a health issue
@@ -1379,57 +1391,75 @@ def scrape_dnc_check():
 # ─── UVHBA DIRECTORY ─────────────────────────────────────────────────────────
 def scrape_uvhba_directory():
     """
-    UVHBA member directory is behind a WP Membership login wall — not publicly
-    accessible. Replaced with Utah SOS new entity filings filtered for
-    construction/contractor company names. Utah SOS business search is a
-    stable government endpoint with no auth requirement.
+    Utah SOS business search returns 403 (Cloudflare JS challenge) in headless context.
+    DOPL contractor license lookup requires CSRF + reCAPTCHA — not viable headlessly.
+    Replaced with US Census Bureau Building Permits Survey county file:
+      https://www2.census.gov/econ/bps/County/co{YEAR}a.txt
+    No auth, stable federal URL, 29 Utah county rows per annual file.
+    Measures residential construction activity by county — high-permit counties
+    indicate new household formation and near-term buyer demand.
+    Same daily-skip gate as other static annual sources.
     """
     slug = 'uvhba-directory'
-    log.info(f'[{slug}] starting — Utah SOS contractor entity filings')
+    log.info(f'[{slug}] starting — Census Building Permits Survey (Utah counties)')
     if _hmda_already_run_today(slug):
         log.info(f'[{slug}] already ran today — skipping')
         return 0
 
+    import csv as _csv, io as _io
+    UTAH_TARGET = {
+        'Salt Lake County': 'Salt Lake',
+        'Utah County':      'Utah',
+        'Davis County':     'Davis',
+        'Weber County':     'Weber',
+        'Wasatch County':   'Wasatch',
+        'Summit County':    'Summit',
+    }
     signals = []
-    # Utah SOS entity search — filter by construction-related name keywords
-    CONTRACTOR_KW = [
-        'construction','contracting','builders','building','roofing',
-        'plumbing','electric','HVAC','excavat','concrete','framing',
-        'drywall','flooring','landscap','remodel','renovation',
-    ]
-    seen = set()
-    for kw in CONTRACTOR_KW:
+    for year in ['2024', '2023', '2022']:
         try:
             r = safe_get(
-                'https://secure.utah.gov/bes/index.html',
-                params={'q': kw, 'filter': 'All', 'status': 'Active'},
-                timeout=15
+                f'https://www2.census.gov/econ/bps/County/co{year}a.txt',
+                timeout=25
             )
             if not r or r.status_code != 200: continue
-            soup = BeautifulSoup(r.text, 'html.parser')
-            for row in soup.select('table tr')[1:]:
-                cells = [td.get_text(strip=True) for td in row.find_all('td')]
-                if len(cells) < 3: continue
-                entity_name = cells[0]
-                entity_id   = cells[1] if len(cells) > 1 else ''
-                entity_type = cells[2] if len(cells) > 2 else ''
-                status      = cells[3] if len(cells) > 3 else ''
-                reg_date    = cells[4] if len(cells) > 4 else ''
-                if not entity_name or entity_id in seen: continue
-                if 'active' not in status.lower(): continue
-                seen.add(entity_id)
-                signals.append({
-                    'source_slug': slug, 'signal_type': 'builder_directory',
-                    'score': 60, 'county': 'Utah', 'city': None,
-                    'raw_owner_name': entity_name[:100],
-                    'raw_address': entity_name[:100],
-                    'raw_payload': json.dumps({
-                        'entity_id': entity_id, 'type': entity_type,
-                        'status': status, 'reg_date': reg_date, 'keyword': kw,
-                    }),
-                })
+            lines = r.text.splitlines()
+            utah_rows = [l for l in lines
+                         if len(l.split(',')) > 8 and l.split(',')[1].strip() == '49']
+            if not utah_rows: continue
+            for row in utah_rows:
+                try:
+                    cols = row.split(',')
+                    county_raw = cols[5].strip()
+                    county = UTAH_TARGET.get(county_raw)
+                    if not county: continue
+                    # 1-unit buildings = new single-family homes
+                    bldgs_1u = int(cols[6].strip() or 0)
+                    units_all = sum(int(cols[j].strip() or 0) for j in [7,10,13,16])
+                    value_1u  = int(cols[8].strip() or 0)
+                    if bldgs_1u <= 0: continue
+                    # High construction volume = strong buyer demand indicator
+                    score = 72 if bldgs_1u > 500 else 65 if bldgs_1u > 200 else 58
+                    signals.append({
+                        'source_slug': slug,
+                        'signal_type': 'builder_directory',
+                        'score': score,
+                        'county': county,
+                        'city': None,
+                        'raw_owner_name': None,
+                        'raw_address': (f'{county_raw} | {bldgs_1u:,} new SF homes | ' +
+                                        f'{units_all:,} total units | ${value_1u:,} value | {year}'),
+                        'raw_payload': json.dumps({
+                            'county': county, 'year': year,
+                            'single_family_buildings': bldgs_1u,
+                            'total_units': units_all,
+                            'sf_value': value_1u,
+                        }),
+                    })
+                except (ValueError, IndexError): continue
+            if signals: break  # Got data, no need to try older year
         except Exception as e:
-            log.warning(f'[{slug}] {kw}: {e}')
+            log.warning(f'[{slug}] Census BPS {year}: {e}')
     return post_batch(signals)
 
 # ─── COMPARABLE SALES SLCO ────────────────────────────────────────────────────
