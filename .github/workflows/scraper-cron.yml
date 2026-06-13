@@ -28,6 +28,10 @@ jobs:
       TRACERFY_API_KEY: ${{ secrets.TRACERFY_API_KEY }}
       VAPI_API_KEY: ${{ secrets.VAPI_API_KEY }}
       DNC_SAN: ${{ secrets.DNC_SAN }}
+      TWILIO_SID: ${{ secrets.TWILIO_SID }}
+      TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+      TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+      ALERT_TO: ${{ secrets.ALERT_TO }}
 
     steps:
       - uses: actions/checkout@v4

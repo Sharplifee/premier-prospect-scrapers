@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Premier Prospect Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --hot: #f85149; --warm: #d29922; --cool: #3fb950;
+    --fail: #f85149; --pass: #3fb950; --stale: #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+  /* Filters */
+  .filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+  .filters select, .filters input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 13px; }
+  .filters button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-weight: 600; font-size: 13px; }
+  .filters button:hover { opacity: 0.85; }
+
+  /* KPI row */
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  .kpi .value { font-size: 28px; font-weight: 700; }
+  .kpi.hot .value  { color: var(--hot); }
+  .kpi.warm .value { color: var(--warm); }
+  .kpi.cool .value { color: var(--cool); }
+
+  /* Section headings */
+  h2 { font-size: 15px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; margin-top: 28px; }
+
+  /* Source status table */
+  .source-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+  .source-table th { background: #1c2128; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 10px 14px; text-align: left; }
+  .source-table td { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+  .source-table tr:hover td { background: #1c2128; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .badge.pass  { background: rgba(63,185,80,.18); color: var(--pass); }
+  .badge.fail  { background: rgba(248,81,73,.18);  color: var(--fail); }
+  .badge.stale { background: rgba(210,153,34,.18); color: var(--stale); }
+  .badge.hot   { background: rgba(248,81,73,.18);  color: var(--hot); }
+  .badge.warm  { background: rgba(210,153,34,.18); color: var(--warm); }
+  .badge.cool  { background: rgba(63,185,80,.18);  color: var(--cool); }
+
+  /* Lead cards */
+  .leads-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .lead-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .lead-card .score-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .lead-card .score { font-size: 28px; font-weight: 800; }
+  .lead-card .score.hot  { color: var(--hot); }
+  .lead-card .score.warm { color: var(--warm); }
+  .lead-card .score.cool { color: var(--cool); }
+  .lead-card .address { font-size: 13px; color: var(--text); margin-bottom: 4px; word-break: break-word; }
+  .lead-card .sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .lead-card .opener { background: #1c2128; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: #cdd9e5; border-left: 3px solid var(--accent); margin-top: 8px; }
+  .lead-card .opener-label { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 4px; }
+
+  /* Pagination / load more */
+  .load-more { text-align: center; margin-top: 24px; }
+  .load-more button { background: var(--surface); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 24px; cursor: pointer; font-size: 13px; }
+  .load-more button:hover { background: #1c2128; }
+
+  .stale-icon { color: var(--stale); }
+  .empty { color: var(--muted); text-align: center; padding: 40px; }
+  .last-updated { color: var(--muted); font-size: 11px; margin-left: 12px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Premier Prospect™ <span style="color:var(--muted);font-weight:400;font-size:14px">Buyer Intelligence</span></h1>
+  <div class="meta">
+    Utah County &amp; Salt Lake County
+    <span class="last-updated" id="lastUpdated"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- FILTERS -->
+  <div class="filters">
+    <select id="filterCounty" onchange="applyFilters()">
+      <option value="">All Counties</option>
+      <option value="Utah">Utah County</option>
+      <option value="Salt Lake">Salt Lake County</option>
+    </select>
+    <select id="filterSignal" onchange="applyFilters()">
+      <option value="">All Signal Types</option>
+      <option value="nts">NTS (Foreclosure)</option>
+      <option value="nod">NOD (Default)</option>
+      <option value="tax_delinquency">Tax Delinquency</option>
+      <option value="expired_listing">Expired Listing</option>
+      <option value="withdrawn_listing">Withdrawn Listing</option>
+      <option value="price_reduction">Price Reduction</option>
+      <option value="high_dom">High DOM</option>
+      <option value="mortgage_application">Mortgage Application</option>
+      <option value="fsbo">FSBO</option>
+      <option value="family_transfer">Family Transfer</option>
+      <option value="obituary">Obituary</option>
+      <option value="lien_judgment">Lien/Judgment</option>
+      <option value="relocation_hire_signal">Relocation/New Hire</option>
+      <option value="rental_listing">Rental Listing</option>
+      <option value="mass_layoff">Mass Layoff</option>
+    </select>
+    <select id="filterSource" onchange="applyFilters()">
+      <option value="">All Sources</option>
+    </select>
+    <select id="filterTier" onchange="applyFilters()">
+      <option value="">All Tiers</option>
+      <option value="HOT">HOT (70-100)</option>
+      <option value="WARM">WARM (40-69)</option>
+      <option value="COOL">COOL (0-39)</option>
+    </select>
+    <input type="date" id="filterDateFrom" onchange="applyFilters()" placeholder="From date" />
+    <input type="date" id="filterDateTo"   onchange="applyFilters()" placeholder="To date"   />
+    <button onclick="resetFilters()">Reset</button>
+  </div>
+
+  <!-- KPI ROW -->
+  <div class="kpi-row">
+    <div class="kpi hot">  <div class="label">HOT Leads</div>  <div class="value" id="kpiHot">—</div></div>
+    <div class="kpi warm"> <div class="label">WARM Leads</div> <div class="value" id="kpiWarm">—</div></div>
+    <div class="kpi cool"> <div class="label">COOL Leads</div> <div class="value" id="kpiCool">—</div></div>
+    <div class="kpi">      <div class="label">Total Signals (24h)</div><div class="value" id="kpiTotal">—</div></div>
+    <div class="kpi">      <div class="label">Active Sources</div>      <div class="value" id="kpiSources">—</div></div>
+    <div class="kpi">      <div class="label"><span class="stale-icon">⚠</span> Stale Sources (&gt;48h)</div><div class="value" id="kpiStale" style="color:var(--stale)">—</div></div>
+  </div>
+
+  <!-- SOURCE STATUS -->
+  <h2>Source Run Status</h2>
+  <table class="source-table" id="sourceTable">
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Last Run</th>
+        <th>Signals</th>
+        <th>Duration</th>
+        <th>Status</th>
+        <th>Staleness</th>
+      </tr>
+    </thead>
+    <tbody id="sourceBody">
+      <tr><td colspan="6" class="empty"><span class="spinner"></span> Loading…</td></tr>
+    </tbody>
+  </table>
+
+  <!-- LEAD CARDS -->
+  <h2>Leads <span id="leadCount" style="color:var(--muted);font-weight:400"></span></h2>
+  <div class="leads-grid" id="leadsGrid">
+    <div class="empty"><span class="spinner"></span> Loading…</div>
+  </div>
+
+  <div class="load-more" id="loadMoreDiv" style="display:none">
+    <button onclick="loadMore()">Load more leads</button>
+  </div>
+
+</div>
+
+<script>
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+// Supabase public anon key — read-only queries only.
+const SUPA_URL = 'https://lbvaosyfikkpvcwksiph.supabase.co';
+const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxidmFvc3lmaWtrcHZjd2tzaXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDQ3OTMyMTEsImV4cCI6MjAyMDM2OTIxMX0.PLACEHOLDER_KEY';
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let allLeads = [];
+let displayedCount = 0;
+const PAGE_SIZE = 24;
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function supa(path, params = {}) {
+  const url = new URL(`${SUPA_URL}/rest/v1/${path}`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  return fetch(url, {
+    headers: { apikey: SUPA_ANON, Authorization: `Bearer ${SUPA_ANON}` }
+  }).then(r => r.json());
+}
+
+function tierClass(tier) {
+  return (tier || '').toLowerCase();
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const diff = (Date.now() - new Date(ts)) / 1000;
+  if (diff < 60) return `${Math.round(diff)}s ago`;
+  if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+  return `${Math.round(diff/86400)}d ago`;
+}
+
+function hoursAgo(ts) {
+  if (!ts) return Infinity;
+  return (Date.now() - new Date(ts)) / 3600000;
+}
+
+// ── SUGGESTED OPENER GENERATOR ────────────────────────────────────────────────
+const OPENERS = {
+  nts:                  (d) => `Hi ${d.name || 'there'}, I noticed a foreclosure notice recently recorded on ${d.addr}. I work with sellers in exactly this situation — would a quick 10-minute call be helpful?`,
+  nod:                  (d) => `Hi ${d.name || 'there'}, I saw a notice of default filed on your property at ${d.addr}. I help homeowners navigate these situations before they escalate — happy to share options at no cost.`,
+  tax_delinquency:      (d) => `Hi ${d.name || 'there'}, I work with property owners in Utah County dealing with delinquent tax situations. I may be able to help you avoid a tax sale on ${d.addr} — worth a quick conversation?`,
+  expired_listing:      (d) => `Hi ${d.name || 'there'}, I saw your listing at ${d.addr} recently expired. I have a different approach that's been working well in this market — interested in a quick chat?`,
+  withdrawn_listing:    (d) => `Hi ${d.name || 'there'}, looks like the listing at ${d.addr} was recently withdrawn. If you're still considering a sale, I'd love to share what I'm seeing right now — quick call this week?`,
+  price_reduction:      (d) => `Hi ${d.name || 'there'}, I noticed a recent price adjustment on ${d.addr}. I work with motivated sellers and often close faster than the market average — would love to connect.`,
+  high_dom:             (d) => `Hi ${d.name || 'there'}, the property at ${d.addr} has been on market a while. I work with sellers who need a more targeted approach — happy to share what's working in this area right now.`,
+  mortgage_application: (d) => `Hi ${d.name || 'there'}, you recently applied for a home loan in Utah County — I'd love to help you find the right property before inventory tightens further. Do you have 10 minutes this week?`,
+  fsbo:                 (d) => `Hi ${d.name || 'there'}, I saw your for-sale-by-owner listing at ${d.addr}. I respect the DIY approach — and if you ever want a second opinion on pricing or exposure, I'm a no-pressure resource.`,
+  family_transfer:      (d) => `Hi ${d.name || 'there'}, I saw a recent deed transfer involving ${d.addr}. If there's a life change driving that, I help families navigate real estate transitions smoothly — happy to connect.`,
+  obituary:             (d) => `This is a condolence outreach — please approach with sensitivity. Consider a handwritten note first for ${d.addr} before any call.`,
+  lien_judgment:        (d) => `Hi ${d.name || 'there'}, I noticed a lien recently recorded on ${d.addr}. I work with property owners to resolve situations like this — even a quick call can clarify your options.`,
+  relocation_hire_signal:(d)=> `Hi ${d.name || 'there'}, congrats on the new role! I help people new to Utah County find the right home fast — especially in a tight market. Would you be open to a 10-minute intro call?`,
+  rental_listing:       (d) => `Hi ${d.name || 'there'}, I saw your rental listing and wanted to reach out — many landlords in Utah County are finding it's a strong time to sell. Curious if you've considered your options?`,
+  mass_layoff:          (d) => `Layoff signal in ${d.county || 'the area'} — consider reaching out to affected employees about housing options if they're relocating.`,
+  default:              (d) => `Hi ${d.name || 'there'}, I came across your property at ${d.addr} and would love to connect about your real estate goals — no pressure, just a quick conversation.`,
+};
+
+function suggestOpener(signal) {
+  const fn = OPENERS[signal.signal_type] || OPENERS.default;
+  return fn({
+    name: signal.raw_owner_name || '',
+    addr: (signal.raw_address || '').substring(0, 60),
+    county: signal.county || '',
+  });
+}
+
+// ── RENDER LEAD CARDS ─────────────────────────────────────────────────────────
+function renderLeadCard(s) {
+  const tc = tierClass(s.tier);
+  const opener = suggestOpener(s);
+  return `
+    <div class="lead-card">
+      <div class="score-row">
+        <div class="score ${tc}">${s.score ?? '—'}</div>
+        <div>
+          <span class="badge ${tc}">${s.tier || 'UNKNOWN'}</span>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">${(s.signal_type||'').replace(/_/g,' ')}</div>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <div style="font-size:11px;color:var(--muted)">${s.county||''}</div>
+          <div style="font-size:11px;color:var(--muted)">${timeAgo(s.captured_at)}</div>
+        </div>
+      </div>
+      <div class="address">${s.raw_address || 'Unknown address'}</div>
+      <div class="sub">${s.raw_owner_name || '—'} · ${s.source_slug||''}</div>
+      <div class="opener">
+        <div class="opener-label">Suggested Opener</div>
+        ${opener}
+      </div>
+    </div>`;
+}
+
+function renderLeads(leads) {
+  const grid = document.getElementById('leadsGrid');
+  if (!leads.length) { grid.innerHTML = '<div class="empty">No leads match current filters.</div>'; return; }
+  grid.innerHTML = leads.slice(0, displayedCount).map(renderLeadCard).join('');
+  document.getElementById('loadMoreDiv').style.display =
+    displayedCount < leads.length ? 'block' : 'none';
+}
+
+// ── LOAD MORE ─────────────────────────────────────────────────────────────────
+function loadMore() {
+  displayedCount = Math.min(displayedCount + PAGE_SIZE, allLeads.length);
+  renderLeads(allLeads);
+}
+
+// ── FILTERS ───────────────────────────────────────────────────────────────────
+function applyFilters() {
+  const county  = document.getElementById('filterCounty').value;
+  const signal  = document.getElementById('filterSignal').value;
+  const source  = document.getElementById('filterSource').value;
+  const tier    = document.getElementById('filterTier').value;
+  const dateFrom = document.getElementById('filterDateFrom').value;
+  const dateTo   = document.getElementById('filterDateTo').value;
+
+  let filtered = window._rawLeads || [];
+  if (county)   filtered = filtered.filter(s => s.county === county);
+  if (signal)   filtered = filtered.filter(s => s.signal_type === signal);
+  if (source)   filtered = filtered.filter(s => s.source_slug === source);
+  if (tier)     filtered = filtered.filter(s => s.tier === tier);
+  if (dateFrom) filtered = filtered.filter(s => s.captured_at >= dateFrom);
+  if (dateTo)   filtered = filtered.filter(s => s.captured_at <= dateTo + 'T23:59:59Z');
+
+  allLeads = filtered;
+  displayedCount = PAGE_SIZE;
+  document.getElementById('leadCount').textContent = `(${filtered.length})`;
+  updateKPIs(filtered);
+  renderLeads(allLeads);
+}
+
+function resetFilters() {
+  ['filterCounty','filterSignal','filterSource','filterTier','filterDateFrom','filterDateTo']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  applyFilters();
+}
+
+// ── KPI UPDATE ────────────────────────────────────────────────────────────────
+function updateKPIs(leads) {
+  const hot  = leads.filter(s => s.tier === 'HOT').length;
+  const warm = leads.filter(s => s.tier === 'WARM').length;
+  const cool = leads.filter(s => s.tier === 'COOL').length;
+  document.getElementById('kpiHot').textContent  = hot;
+  document.getElementById('kpiWarm').textContent = warm;
+  document.getElementById('kpiCool').textContent = cool;
+  document.getElementById('kpiTotal').textContent = leads.length;
+}
+
+// ── RENDER SOURCE TABLE ────────────────────────────────────────────────────────
+function renderSourceTable(rows) {
+  const tbody = document.getElementById('sourceBody');
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No run log data available.</td></tr>';
+    return;
+  }
+  let staleCount = 0;
+  tbody.innerHTML = rows.map(r => {
+    const hrs = hoursAgo(r.last_run_at);
+    const stale = hrs > 48;
+    if (stale) staleCount++;
+    const statusBadge = r.last_status === 'success'
+      ? `<span class="badge pass">PASS</span>`
+      : `<span class="badge fail">FAIL</span>`;
+    const staleBadge = stale
+      ? `<span class="badge stale">⚠ ${Math.round(hrs)}h ago</span>`
+      : `<span style="color:var(--pass);font-size:12px">✓ Current</span>`;
+    const dur = r.avg_duration != null ? `${r.avg_duration}s` : '—';
+    return `<tr>
+      <td>${r.source_slug}</td>
+      <td>${timeAgo(r.last_run_at)}</td>
+      <td>${r.last_signal_count ?? 0}</td>
+      <td>${dur}</td>
+      <td>${statusBadge}</td>
+      <td>${staleBadge}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('kpiStale').textContent = staleCount;
+}
+
+// ── MAIN LOAD ─────────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  document.getElementById('lastUpdated').textContent = 'Loading…';
+
+  // 1. Load signals (last 48h, ordered by score desc)
+  const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  let leadsRaw = [];
+  try {
+    leadsRaw = await supa('pp_scraper_signals', {
+      select: 'id,source_slug,signal_type,score,tier,county,city,raw_address,raw_owner_name,captured_at,raw_payload',
+      captured_at: `gte.${since}`,
+      order: 'score.desc,captured_at.desc',
+      limit: 1000,
+    });
+    if (!Array.isArray(leadsRaw)) leadsRaw = [];
+  } catch(e) { console.error('leads load failed', e); }
+
+  // Backfill tier if DB column not yet present
+  leadsRaw = leadsRaw.map(s => {
+    if (!s.tier) {
+      s.tier = s.score >= 70 ? 'HOT' : s.score >= 40 ? 'WARM' : 'COOL';
+    }
+    return s;
+  });
+
+  window._rawLeads = leadsRaw;
+  allLeads = leadsRaw;
+  displayedCount = PAGE_SIZE;
+
+  // Populate source filter dropdown
+  const sources = [...new Set(leadsRaw.map(s => s.source_slug))].sort();
+  const sel = document.getElementById('filterSource');
+  sources.forEach(src => {
+    const opt = document.createElement('option');
+    opt.value = src; opt.textContent = src;
+    sel.appendChild(opt);
+  });
+
+  updateKPIs(leadsRaw);
+  document.getElementById('leadCount').textContent = `(${leadsRaw.length})`;
+  renderLeads(allLeads);
+
+  // 2. Load source run log (latest per source)
+  let runLog = [];
+  try {
+    runLog = await supa('pp_run_log', {
+      select: 'source_slug,run_at,signal_count,status,duration_seconds',
+      order: 'run_at.desc',
+      limit: 500,
+    });
+    if (!Array.isArray(runLog)) runLog = [];
+  } catch(e) { console.error('run log failed', e); }
+
+  // Aggregate: latest run per source
+  const bySource = {};
+  runLog.forEach(r => {
+    if (!bySource[r.source_slug] || r.run_at > bySource[r.source_slug].last_run_at) {
+      bySource[r.source_slug] = {
+        source_slug: r.source_slug,
+        last_run_at: r.run_at,
+        last_signal_count: r.signal_count,
+        last_status: r.status,
+        avg_duration: r.duration_seconds,
+      };
+    }
+  });
+  const sourceRows = Object.values(bySource).sort((a,b) => a.source_slug.localeCompare(b.source_slug));
+  document.getElementById('kpiSources').textContent = sourceRows.filter(r => hoursAgo(r.last_run_at) < 48).length;
+  renderSourceTable(sourceRows);
+
+  document.getElementById('lastUpdated').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+// Auto-refresh every 5 minutes
+loadDashboard();
+setInterval(loadDashboard, 5 * 60 * 1000);
+</script>
+</body>
+</html>

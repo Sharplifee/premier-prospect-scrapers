@@ -121,7 +121,14 @@ CREATE TABLE IF NOT EXISTS pp_scraper_signals (id bigint NOT NULL DEFAULT nextva
 
 CREATE TABLE IF NOT EXISTS pp_buyer_events (id bigint NOT NULL DEFAULT nextval('pp_buyer_events_id_seq'::regclass), created_at timestamp with time zone DEFAULT now(), visitor_id text NOT NULL, session_id text, agent_id text DEFAULT '00000000-0000-0000-0000-000000000001'::text, event_type text NOT NULL, url text, listing_id text, zip5 text, city text, price_cents bigint, form_name text, form_email text, form_phone text, form_address text, sms_opt_in boolean DEFAULT false, call_opt_in boolean DEFAULT false, consent_text text, ip_address text, user_agent text, metadata jsonb DEFAULT '{}'::jsonb);
 
-CREATE TABLE IF NOT EXISTS pp_run_log (id bigint NOT NULL DEFAULT nextval('pp_run_log_id_seq'::regclass), source_slug text NOT NULL, run_at timestamp with time zone NOT NULL DEFAULT now(), signal_count integer NOT NULL DEFAULT 0, status text NOT NULL DEFAULT 'success'::text, error_msg text, run_number integer DEFAULT 0, created_at timestamp with time zone NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS pp_run_log (id bigint NOT NULL DEFAULT nextval('pp_run_log_id_seq'::regclass), source_slug text NOT NULL, run_at timestamp with time zone NOT NULL DEFAULT now(), signal_count integer NOT NULL DEFAULT 0, status text NOT NULL DEFAULT 'success'::text, error_msg text, run_number integer DEFAULT 0, created_at timestamp with time zone NOT NULL DEFAULT now(), duration_seconds numeric(8,1), records_skipped integer DEFAULT 0);
+
+-- Score unified 0-100: tier column on pp_scraper_signals (HOT=70-100, WARM=40-69, COOL=0-39)
+-- ALTER TABLE pp_scraper_signals ADD COLUMN IF NOT EXISTS tier text GENERATED ALWAYS AS (CASE WHEN score >= 70 THEN 'HOT' WHEN score >= 40 THEN 'WARM' ELSE 'COOL' END) STORED;
+
+CREATE TABLE IF NOT EXISTS pp_score_history (id bigint NOT NULL DEFAULT nextval('pp_score_history_id_seq'::regclass), lead_id bigint NOT NULL, score integer NOT NULL, tier text NOT NULL, scored_at timestamp with time zone NOT NULL DEFAULT now(), scoring_version text NOT NULL DEFAULT 'v1');
+
+CREATE TABLE IF NOT EXISTS pp_identity_match (id bigint NOT NULL DEFAULT nextval('pp_identity_match_id_seq'::regclass), lead_id bigint NOT NULL, matched_name text, matched_phone text, matched_email text, address text, confidence_score numeric(5,2), matched_at timestamp with time zone NOT NULL DEFAULT now(), source text NOT NULL DEFAULT 'manual');
 
 -- GROK
 CREATE TABLE IF NOT EXISTS grok_call_logs (id uuid NOT NULL DEFAULT gen_random_uuid(), created_at timestamp with time zone DEFAULT now(), conversation_id text, agent_id text, caller_number text, recipient_number text, call_purpose text, call_outcome text, summary text, next_steps text, followup_required boolean DEFAULT false, raw_payload jsonb);

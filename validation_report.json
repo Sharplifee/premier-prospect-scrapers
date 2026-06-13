@@ -1,0 +1,175 @@
+{
+  "run_at": "2026-06-13T22:33:37.589676Z",
+  "mode": "dry_run",
+  "layers": {
+    "1. Source Ingestion": {
+      "status": "PASS",
+      "count": 10,
+      "duration_s": 0.0
+    },
+    "2. Junk Filter": {
+      "status": "PASS",
+      "kept": 10,
+      "filtered": 0,
+      "duration_s": 0.0
+    },
+    "3. Deduplication": {
+      "status": "PASS",
+      "unique": 10,
+      "duplicates": 0,
+      "duration_s": 0.0
+    },
+    "4. Score Calculation (0-100)": {
+      "status": "PASS",
+      "score_range": "30-99",
+      "errors": [],
+      "duration_s": 0.0
+    },
+    "5. Entity Resolution": {
+      "status": "PASS",
+      "matched": 6,
+      "mode": "dry_run",
+      "duration_s": 0.0
+    },
+    "5.5. MLS Validation": {
+      "status": "PASS",
+      "signals_modified": 0,
+      "tests_passed": true,
+      "duration_s": 0.2
+    },
+    "6. Enrichment (Tracerfy \u2014 staged)": {
+      "status": "STAGED",
+      "note": "Tracerfy skip-trace staged \u2014 awaiting API key activation",
+      "key_present": false,
+      "duration_s": 0.0
+    },
+    "7. DNC Compliance (staged)": {
+      "status": "STAGED",
+      "note": "DNC compliance staged \u2014 awaiting DNC_SAN activation",
+      "san_present": false,
+      "duration_s": 0.0
+    },
+    "8. Tier Assignment (HOT/WARM/COOL)": {
+      "status": "PASS",
+      "distribution": {
+        "HOT": 6,
+        "WARM": 3,
+        "COOL": 1
+      },
+      "errors": [],
+      "duration_s": 0.0
+    },
+    "9. Dashboard Refresh (KPI cache)": {
+      "status": "PASS",
+      "mode": "dry_run",
+      "duration_s": 0.0
+    },
+    "10. Outreach Routing (VAPI \u2014 staged)": {
+      "status": "STAGED",
+      "note": "VAPI voice outreach staged \u2014 awaiting activation",
+      "vapi_key_present": false,
+      "eligible_leads": 0,
+      "duration_s": 0.0
+    }
+  },
+  "signals": {
+    "total_ingested": 10,
+    "after_dedup": 10,
+    "tier_distribution": {
+      "HOT": 6,
+      "WARM": 3,
+      "COOL": 1
+    },
+    "sources": [
+      "validate-migration",
+      "validate-hmda",
+      "validate-expired",
+      "validate-rental",
+      "validate-nod",
+      "validate-lien",
+      "validate-tax",
+      "validate-fsbo",
+      "validate-nts",
+      "validate-contractor"
+    ]
+  },
+  "tier_distribution": {
+    "HOT": 6,
+    "WARM": 3,
+    "COOL": 1
+  },
+  "score_tests": [
+    {
+      "source": "validate-nts",
+      "score": 99,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-nod",
+      "score": 88,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-expired",
+      "score": 95,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-fsbo",
+      "score": 65,
+      "tier": "WARM",
+      "expected_tier": "WARM",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-tax",
+      "score": 75,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-lien",
+      "score": 68,
+      "tier": "WARM",
+      "expected_tier": "WARM",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-contractor",
+      "score": 30,
+      "tier": "COOL",
+      "expected_tier": "COOL",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-migration",
+      "score": 72,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-rental",
+      "score": 55,
+      "tier": "WARM",
+      "expected_tier": "WARM",
+      "result": "PASS"
+    },
+    {
+      "source": "validate-hmda",
+      "score": 82,
+      "tier": "HOT",
+      "expected_tier": "HOT",
+      "result": "PASS"
+    }
+  ],
+  "errors": [],
+  "passed": true
+}
