@@ -125,7 +125,13 @@ def apify_text(url, retries=2):
 
 # ── BATCH INSERT ──────────────────────────────────────────────────────────────
 ALLOWED_COLS = {'source_slug','raw_address','raw_owner_name','raw_phone','raw_url',
-                'raw_payload','signal_type','score','county','city','captured_at','dedupe_hash'}
+                'raw_payload','signal_type','score','tier','county','city','captured_at','dedupe_hash'}
+
+# Unified score scale: HOT=70-100, WARM=40-69, COOL=0-39
+def score_tier(score):
+    if score >= 70: return 'HOT'
+    if score >= 40: return 'WARM'
+    return 'COOL'
 
 def post_batch(records):
     if not records: return 0
@@ -133,6 +139,9 @@ def post_batch(records):
     for rec in records:
         rec['raw_owner_name'] = clean_owner(rec.get('raw_owner_name'))
         rec['raw_address']    = clean_addr(rec.get('raw_address'))
+        # Unified 0-100 score scale with tier label
+        score = rec.get('score', 0) or 0
+        rec['tier'] = score_tier(score)
         # Stable dedupe hash — does NOT include URL (which changes per run)
         h = hashlib.md5(
             f"{rec.get('source_slug','')}|{rec.get('raw_owner_name','') or ''}|{rec.get('raw_address','') or ''}".encode()
@@ -157,18 +166,53 @@ def post_batch(records):
                 if attempt < 2: time.sleep(5)
     return inserted
 
-def write_run_log(slug, count, status='success', error=None):
+TWILIO_SID   = os.environ.get('TWILIO_SID', '')
+TWILIO_TOKEN = os.environ.get('TWILIO_TOKEN', '')
+TWILIO_FROM  = os.environ.get('TWILIO_FROM', '')
+ALERT_TO     = os.environ.get('ALERT_TO', '')
+
+def _send_sms_alert(msg):
+    """Fire-and-forget Twilio SMS — only if credentials present."""
+    if not (TWILIO_SID and TWILIO_TOKEN and TWILIO_FROM and ALERT_TO):
+        return
+    try:
+        import urllib.parse
+        import base64
+        body = urllib.parse.urlencode({'From': TWILIO_FROM, 'To': ALERT_TO, 'Body': msg})
+        auth = base64.b64encode(f"{TWILIO_SID}:{TWILIO_TOKEN}".encode()).decode()
+        SESSION.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+            data=body,
+            headers={'Authorization': f'Basic {auth}', 'Content-Type': 'application/x-www-form-urlencoded'},
+            timeout=8
+        )
+    except Exception as e:
+        log.warning(f"SMS alert failed: {e}")
+
+def write_run_log(slug, count, status='success', error=None, duration=None, skipped=0):
     try:
         payload = {
             'source_slug': slug,
             'run_at': datetime.datetime.utcnow().isoformat() + 'Z',
-            'signal_count': count, 'status': status,
+            'signal_count': count,
+            'status': status,
             'error_msg': error,
             'run_number': int(os.environ.get('GITHUB_RUN_NUMBER', 0)),
+            'duration_seconds': round(duration, 1) if duration is not None else None,
+            'records_skipped': skipped,
         }
         SESSION.post(f"{SUPABASE_URL}/rest/v1/pp_run_log",
                     json=payload, headers=HEADERS, timeout=5)
     except: pass
+    # Per-source failure SMS alert
+    if status == 'error' and error:
+        ts = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+        _send_sms_alert(
+            f"⚠️ Premier Prospect SCRAPER FAIL\n"
+            f"Source: {slug}\n"
+            f"Error: {error[:120]}\n"
+            f"Time: {ts}"
+        )
 
 # ── HEALTH MONITOR ────────────────────────────────────────────────────────────
 # Minimum expected yields per source per run — if below, flag as degraded
@@ -1521,12 +1565,12 @@ if __name__ == '__main__':
             total += n
             results[slug] = n
             check_health(slug, n)
-            write_run_log(slug, n, 'success')
+            write_run_log(slug, n, 'success', duration=elapsed)
             log.info(f'[{slug}] {n} signals — {elapsed}s')
         except Exception as e:
             elapsed = round(time.time() - t0, 1)
             log.error(f'[{slug}] CRASHED: {e} — {elapsed}s')
-            write_run_log(slug, 0, 'error', str(e)[:200])
+            write_run_log(slug, 0, 'error', str(e)[:200], duration=elapsed)
             results[slug] = 0
 
     # Health summary
