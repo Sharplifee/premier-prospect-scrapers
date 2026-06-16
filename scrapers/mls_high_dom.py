@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 Premier Prospect™ — MLS High Days on Market (90+ DOM)
-Signal: high_dom_listing — Score 75 (HOT)
-Active listings with 90+ days on market — seller motivation building.
-Score scales with DOM: 75 base, +5 at 120d, +10 at 180d.
+Source:  utahrealestate.com (session-cookie auth, reverse-engineered)
+Signal:  high_dom_listing — Score 75-85 DOM-scaled (HOT, agent_first)
+Auth:    ure_session.py — shakel/Ronnal13= member 88098
 """
-import os, json, logging, hashlib, requests, re
+import os, json, logging, hashlib, requests, re, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 log = logging.getLogger(__name__)
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
@@ -13,34 +16,42 @@ SOURCE_SLUG  = 'mls-high-dom'
 SIGNAL_TYPE  = 'high_dom_listing'
 SCORE_BASE   = 75
 COUNTIES     = {'Salt Lake', 'Utah', 'Weber', 'Davis'}
-HIGH_DOM_CHECKSUM = os.environ.get('URE_HIGH_DOM_CHECKSUM', 'd751713988987e9331980363e24189ce')
-HEADERS = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}',
-           'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
+CHECKSUM     = os.environ.get('URE_HIGH_DOM_CHECKSUM', 'd751713988987e9331980363e24189ce')
+HDR = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}',
+       'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
 def run() -> int:
-    from ure_session import get_session, parse_search_listnos, parse_listing
+    try:
+        from ure_session import get_session, parse_search_listnos, parse_listing
+    except ImportError:
+        from scrapers.ure_session import get_session, parse_search_listnos, parse_listing
+
     log.info(f'[{SOURCE_SLUG}] starting')
     sess = get_session()
     sess.ensure_alive()
-    signals = []
-    seen = set()
+    signals, seen = [], set()
+
     for page in range(1, 4):
-        html = sess.search_perform(checksum=HIGH_DOM_CHECKSUM, page=page)
+        html = sess.search_perform(checksum=CHECKSUM, page=page)
         listnos = parse_search_listnos(html) if html else []
         log.info(f'[{SOURCE_SLUG}] page {page}: {len(listnos)} listings')
-        if not listnos: break
+        if not listnos:
+            break
         for listno in listnos:
-            if listno in seen: continue
+            if listno in seen:
+                continue
             seen.add(listno)
             listing = parse_listing(sess.get_listing(listno), listno)
-            if not listing: continue
-            county = listing.get('county','').replace(' County','').strip()
-            if county and county not in COUNTIES: continue
-            dom_str = re.sub(r'[^0-9]', '', listing.get('days_on_market','0'))
-            dom = int(dom_str or 0)
-            if dom < 90: continue  # Only 90+ DOM
-            address = listing.get('address','') or f'MLS #{listno}'
-            price = listing.get('price', 0) or 0
+            if not listing:
+                continue
+            county = listing.get('county', '').replace(' County', '').strip()
+            if county and county not in COUNTIES:
+                continue
+            dom_raw = re.sub(r'[^0-9]', '', str(listing.get('days_on_market', '0')))
+            dom = int(dom_raw or 0)
+            if dom < 90:
+                continue
+            address = listing.get('address') or f'MLS #{listno}'
             score = min(SCORE_BASE + (5 if dom >= 120 else 0) + (5 if dom >= 180 else 0), 95)
             dedup = hashlib.sha256(f'{SOURCE_SLUG}:{listno}'.encode()).hexdigest()
             signals.append({
@@ -49,16 +60,21 @@ def run() -> int:
                 'county': county or None, 'score': score,
                 'primed_stage': 1, 'motivation_probability': 68,
                 'outreach_routing': 'agent_first', 'dedupe_hash': dedup,
-                'raw_payload': json.dumps({'listno': listno, 'price': price,
+                'raw_payload': json.dumps({
+                    'listno': listno, 'price': listing.get('price', 0),
                     'days_on_market': dom,
-                    'listing_url': f'https://www.utahrealestate.com/member/{listno}'})
+                    'listing_url': f'https://www.utahrealestate.com/member/{listno}'
+                })
             })
+
     if not signals:
-        log.info(f'[{SOURCE_SLUG}] 0 signals'); return 0
-    r = requests.post(f'{SUPABASE_URL}/rest/v1/pp_scraper_signals',
-        headers=HEADERS, json=signals, timeout=30)
-    inserted = len(signals) if r.status_code in [200,201] else 0
-    log.info(f'[{SOURCE_SLUG}] done — {inserted} inserted'); return inserted
+        log.info(f'[{SOURCE_SLUG}] 0 signals')
+        return 0
+    r = requests.post(f'{SUPABASE_URL}/rest/v1/pp_scraper_signals', headers=HDR, json=signals, timeout=30)
+    inserted = len(signals) if r.status_code in [200, 201] else 0
+    log.info(f'[{SOURCE_SLUG}] done — {inserted} inserted')
+    return inserted
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO); run()
+    logging.basicConfig(level=logging.INFO)
+    run()
