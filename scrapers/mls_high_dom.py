@@ -20,15 +20,31 @@ CHECKSUM     = os.environ.get('URE_HIGH_DOM_CHECKSUM', 'd751713988987e9331980363
 HDR = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}',
        'Content-Type': 'application/json', 'Prefer': 'return=minimal'}
 
-def run() -> int:
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+# Use quad-redundancy auth engine when available
+try:
+    from ure_auth_engine import get_authenticated_session as _get_session
+    from ure_session import parse_search_listnos, parse_listing
+    def _make_session():
+        return _get_session()
+except ImportError:
     try:
-        from ure_session import get_session, parse_search_listnos, parse_listing
+        from scrapers.ure_session import get_session as _raw_sess, parse_search_listnos, parse_listing
     except ImportError:
-        from scrapers.ure_session import get_session, parse_search_listnos, parse_listing
+        from ure_session import get_session as _raw_sess, parse_search_listnos, parse_listing
+    def _make_session():
+        s = _raw_sess()
+        s.ensure_alive()
+        return s
+
+def run() -> int:
+    # auth engine loaded at module level
 
     log.info(f'[{SOURCE_SLUG}] starting')
-    sess = get_session()
-    sess.ensure_alive()
+    sess = _make_session()
     signals, seen = [], set()
 
     for page in range(1, 4):

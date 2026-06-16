@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Premier Prospect™ — Utah Real Estate Session Manager
-Autonomous self-healing session for utahrealestate.com
-
-Auth pattern (reverse-engineered, no docs exist):
-  1. GET /auth/login.form/ → one-time key
-  2. POST /auth/authenticate/ with login_{key}/pass_{key} → PHPSESSID + session pair
-  3. Persistent ure_login_token set by browser JS — must be captured from live browser
-     and stored as URE_SESSION_COOKIE secret. Auto-refreshes when expired.
-
-Credentials: shakel / Ronnal13= (member ID 88098 — Kelvin Sharp)
+Premier Prospect™ — UREstate Session Manager
+Delegates to ure_auth_engine (quad-redundancy) when available.
+Falls back to direct session logic for standalone use.
 """
-import os, logging, re, time, requests
+import os, sys, logging, re, time, requests
+
+log = logging.getLogger(__name__)
+
+# Delegate to quad-redundancy engine when called from the pipeline
+try:
+    from ure_auth_engine import get_authenticated_session as _get_engine_session
+    _USE_ENGINE = True
+    log.info('[ure_session] using ure_auth_engine quad-redundancy layer')
+except ImportError:
+    _USE_ENGINE = False
+    log.info('[ure_session] ure_auth_engine not available — using direct session')
+
+# ── CREDENTIALS os, logging, re, time, requests
 
 log = logging.getLogger(__name__)
 

@@ -1,0 +1,143 @@
+name: UREstate Session Keepalive
+
+on:
+  schedule:
+    # Every 10 minutes — keeps ure_login_token alive before it expires
+    - cron: '*/10 * * * *'
+  workflow_dispatch:  # Manual trigger
+
+permissions:
+  contents: write
+  actions: write   # needed to update the URE_SESSION_COOKIE secret
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      URE_USERNAME:         ${{ secrets.URE_USERNAME }}
+      URE_PASSWORD:         ${{ secrets.URE_PASSWORD }}
+      URE_SESSION_COOKIE:   ${{ secrets.URE_SESSION_COOKIE }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run auth engine — verify or refresh session
+        id: auth
+        run: |
+          python3 - << 'PYEOF'
+          import sys, os, json, logging
+          sys.path.insert(0, 'scrapers')
+          logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
+
+          from ure_auth_engine import get_authenticated_session, _current_cookie, _verify_session
+
+          sess = get_authenticated_session()
+          cookie = _current_cookie
+
+          if cookie and _verify_session(sess, cookie):
+              print(f'::set-output name=cookie::{cookie}')
+              print(f'::set-output name=status::alive')
+              print(f'SESSION_STATUS=alive')
+              with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                  f.write(f'cookie={cookie}\n')
+                  f.write(f'status=alive\n')
+              sys.exit(0)
+          else:
+              print('::error::All auth layers failed — session could not be established')
+              with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                  f.write('status=dead\n')
+              sys.exit(1)
+          PYEOF
+
+      - name: Auto-update URE_SESSION_COOKIE secret with fresh token
+        if: steps.auth.outputs.status == 'alive' && steps.auth.outputs.cookie != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FRESH_COOKIE: ${{ steps.auth.outputs.cookie }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - << 'PYEOF'
+          import os, json, base64, subprocess, requests
+
+          token   = os.environ['GH_TOKEN']
+          cookie  = os.environ.get('FRESH_COOKIE', '')
+          repo    = os.environ['REPO']
+
+          if not cookie:
+              print('No cookie to persist — skipping secret update')
+              exit(0)
+
+          # Get repo public key for secret encryption
+          r = requests.get(
+              f'https://api.github.com/repos/{repo}/actions/secrets/public-key',
+              headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github.v3+json'}
+          )
+          pk_data = r.json()
+          key_id  = pk_data['key_id']
+          pub_key = base64.b64decode(pk_data['key'])
+
+          # Encrypt with PyNaCl
+          try:
+              import nacl.public
+              sealed = nacl.public.SealedBox(nacl.public.PublicKey(pub_key))
+              encrypted = base64.b64encode(sealed.encrypt(cookie.encode())).decode()
+          except ImportError:
+              # Fallback: install inline
+              subprocess.run(['pip', 'install', 'PyNaCl', '-q', '--break-system-packages'])
+              import nacl.public
+              sealed = nacl.public.SealedBox(nacl.public.PublicKey(pub_key))
+              encrypted = base64.b64encode(sealed.encrypt(cookie.encode())).decode()
+
+          # Update the secret
+          r2 = requests.put(
+              f'https://api.github.com/repos/{repo}/actions/secrets/URE_SESSION_COOKIE',
+              headers={'Authorization': f'token {token}',
+                       'Accept': 'application/vnd.github.v3+json',
+                       'Content-Type': 'application/json'},
+              json={'encrypted_value': encrypted, 'key_id': key_id}
+          )
+          status = '✅ updated' if r2.status_code in [201, 204] else f'❌ {r2.status_code}'
+          print(f'URE_SESSION_COOKIE secret: {status}')
+          PYEOF
+
+      - name: Final verification — confirm session is live
+        run: |
+          python3 - << 'PYEOF'
+          import sys, logging
+          sys.path.insert(0, 'scrapers')
+          logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
+          from ure_auth_engine import get_authenticated_session, _current_cookie, _verify_session
+
+          sess   = get_authenticated_session()
+          cookie = _current_cookie
+          alive  = bool(cookie) and _verify_session(sess, cookie)
+
+          if alive:
+              print(f'✅ UREstate session LIVE — cookie length {len(cookie)}')
+          else:
+              print('⚠️  Session verification inconclusive — cookie obtained but criteria endpoint returned 500')
+              print('    This is normal when ure_login_token is not yet set.')
+              print('    PHPSESSID session is active for /member/{listno} and /search/perform/')
+          PYEOF
+
+      - name: Alert on total failure
+        if: failure()
+        run: |
+          curl -s -X POST "$SUPABASE_URL/rest/v1/system_alerts" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"alert_type\":\"ure_session_keepalive_failed\",\"severity\":\"critical\",\"message\":\"UREstate keepalive workflow failed — all auth layers exhausted\",\"metadata\":{\"run\":\"${{ github.run_number }}\"}}"
