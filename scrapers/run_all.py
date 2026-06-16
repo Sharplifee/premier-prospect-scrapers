@@ -1344,30 +1344,38 @@ def scrape_zillow_home_values():
         if r2.status_code in (200,201,204): count = len(batch)
     return count
 
-# ─── MLS SCRAPERS (no-op until token set) ────────────────────────────────────
+# ─── MLS SCRAPERS — session-cookie auth (shakel/Ronnal13=, member 88098) ──────
 def scrape_mls_expired():
     try:
         from scrapers import mls_expired_listings
         return mls_expired_listings.run()
-    except ImportError: return 0
+    except Exception as e:
+        log.warning(f'[mls-expired-listings] {type(e).__name__}: {e}')
+        return 0
 
 def scrape_mls_price_reductions():
     try:
         from scrapers import mls_price_reductions
         return mls_price_reductions.run()
-    except ImportError: return 0
+    except Exception as e:
+        log.warning(f'[mls-price-reductions] {type(e).__name__}: {e}')
+        return 0
 
 def scrape_mls_high_dom():
     try:
         from scrapers import mls_high_dom
         return mls_high_dom.run()
-    except ImportError: return 0
+    except Exception as e:
+        log.warning(f'[mls-high-dom] {type(e).__name__}: {e}')
+        return 0
 
 def scrape_mls_withdrawn():
     try:
         from scrapers import mls_withdrawn_listings
         return mls_withdrawn_listings.run()
-    except ImportError: return 0
+    except Exception as e:
+        log.warning(f'[mls-withdrawn-listings] {type(e).__name__}: {e}')
+        return 0
 
 # ─── PENDING ACTIVATION ───────────────────────────────────────────────────────
 def scrape_tracerfy():
