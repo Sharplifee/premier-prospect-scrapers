@@ -26,7 +26,14 @@ log = logging.getLogger('pp.scrapers')
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 APIFY_TOKEN  = os.environ.get('APIFY_TOKEN', '')
-MLS_TOKEN    = os.environ.get('MLS_BEARER_TOKEN', 'PENDING_DOCUSIGN')
+# MLS credentials — session cookie auth (utahrealestate.com reverse-engineered)
+# URE_USERNAME: shakel (Kelvin's account)
+# URE_PASSWORD: Ronnal13= (set in GitHub Secrets)
+# URE_SESSION_COOKIE: persistent ure_login_token from browser session (optional but preferred)
+# All stored as GitHub Secrets — auto-login fires on every scraper run
+URE_USERNAME    = os.environ.get('URE_USERNAME', 'shakel')
+URE_PASSWORD    = os.environ.get('URE_PASSWORD', 'Ronnal13=')
+URE_SESSION_COOKIE = os.environ.get('URE_SESSION_COOKIE', '')
 
 TABLE_URL = f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
 HEADERS = {
@@ -1339,28 +1346,24 @@ def scrape_zillow_home_values():
 
 # ─── MLS SCRAPERS (no-op until token set) ────────────────────────────────────
 def scrape_mls_expired():
-    if MLS_TOKEN == 'PENDING_DOCUSIGN': return 0
     try:
         from scrapers import mls_expired_listings
         return mls_expired_listings.run()
     except ImportError: return 0
 
 def scrape_mls_price_reductions():
-    if MLS_TOKEN == 'PENDING_DOCUSIGN': return 0
     try:
         from scrapers import mls_price_reductions
         return mls_price_reductions.run()
     except ImportError: return 0
 
 def scrape_mls_high_dom():
-    if MLS_TOKEN == 'PENDING_DOCUSIGN': return 0
     try:
         from scrapers import mls_high_dom
         return mls_high_dom.run()
     except ImportError: return 0
 
 def scrape_mls_withdrawn():
-    if MLS_TOKEN == 'PENDING_DOCUSIGN': return 0
     try:
         from scrapers import mls_withdrawn_listings
         return mls_withdrawn_listings.run()
