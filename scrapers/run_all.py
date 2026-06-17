@@ -1,5 +1,6 @@
 """
-Premier Prospect™ — Scraper Pipeline v20
+Premier Prospect™ — Scraper Pipeline v20.1
+Fixes June 17 2026: DEED OF TRUST removed, WARN Act county map, FSBO Utah filter, competitor -> market_data, LIR owner names
 Commercial-grade: retry logic, source health monitoring,
 correct dedup, no broken scrapers, single __main__, no undefined refs.
 """
@@ -304,7 +305,7 @@ def scrape_nod_tracker():
     slug = 'nod-tracker'
     log.info(f'[{slug}] starting')
     signals = []
-    for doc_type in ['NOTICE OF DEFAULT', 'DEED OF TRUST']:
+    for doc_type in ['NOTICE OF DEFAULT']:  # DEED OF TRUST removed — routine mortgage, not distress
         r = safe_post(
             'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
             data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
@@ -461,7 +462,7 @@ def scrape_fire_marshal_lp_hvac():     return scrape_fire_marshal('fire-marshal-
 def scrape_lir(slug, county, svc):
     log.info(f'[{slug}] starting')
     r = safe_get(f"{svc}/query", params={
-        'where':'1=1','outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE',
+        'where':'1=1','outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE,OWN_NAME1,OWN_NAME2',
         'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'
     }, timeout=25)
     if not r: return 0
@@ -472,11 +473,14 @@ def scrape_lir(slug, county, svc):
         a = f.get('attributes',{})
         addr = a.get('PARCEL_ADD','')
         city = a.get('PARCEL_CITY','')
+        own1 = a.get('OWN_NAME1','') or ''
+        own2 = a.get('OWN_NAME2','') or ''
+        owner = ' '.join(filter(None, [own1.strip(), own2.strip()])).strip() or None
         if not addr: continue
         signals.append({
             'source_slug': slug, 'signal_type': 'lir_parcel', 'score': 45,
             'county': county, 'city': city or None,
-            'raw_owner_name': None,
+            'raw_owner_name': clean_owner(owner),
             'raw_address': f"{addr}, {city}".strip(', ') if city else addr,
         })
     return post_batch(signals)
@@ -556,7 +560,11 @@ def scrape_ksl_fsbo_extended():
                 link = link_el['href'] if link_el else url
                 if not link.startswith('http'): link = url.split('/search')[0] + link
                 full = f"{title} {price}".strip()
-                if full and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house']):
+                if (full
+                    and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house'])
+                    and any(s in full.lower() for s in [', ut','utah','salt lake','provo',
+                        'orem','lehi','ogden','draper','sandy','murray','west jordan',
+                        'american fork','layton','bountiful','springville'])):
                     signals.append({
                         'source_slug': slug, 'signal_type': 'fsbo', 'score': 65,
                         'county': county, 'city': None,
@@ -628,7 +636,33 @@ def scrape_warn_act_utah():
         workers = cells[3].get_text(strip=True) if len(cells) > 3 else ''
         date = cells[0].get_text(strip=True)
         if not company: continue
-        county = 'Utah' if city.lower() in ['provo','orem','lehi','american fork','payson'] else 'Salt Lake'
+        CITY_COUNTY = {
+            # Utah County
+            'provo': 'Utah', 'orem': 'Utah', 'lehi': 'Utah', 'american fork': 'Utah',
+            'payson': 'Utah', 'springville': 'Utah', 'spanish fork': 'Utah',
+            'pleasant grove': 'Utah', 'lindon': 'Utah', 'mapleton': 'Utah',
+            'saratoga springs': 'Utah', 'eagle mountain': 'Utah', 'vineyard': 'Utah',
+            # Weber County
+            'ogden': 'Weber', 'north ogden': 'Weber', 'south ogden': 'Weber',
+            'roy': 'Weber', 'riverdale': 'Weber', 'washington terrace': 'Weber',
+            # Davis County
+            'layton': 'Davis', 'bountiful': 'Davis', 'clearfield': 'Davis',
+            'kaysville': 'Davis', 'farmington': 'Davis', 'north salt lake': 'Davis',
+            'west bountiful': 'Davis', 'centerville': 'Davis', 'clinton': 'Davis',
+            # Washington County
+            'st. george': 'Washington', 'st george': 'Washington',
+            'washington': 'Washington', 'santa clara': 'Washington',
+            # Cache County
+            'logan': 'Cache', 'north logan': 'Cache', 'smithfield': 'Cache',
+            # Salt Lake County
+            'salt lake city': 'Salt Lake', 'salt lake': 'Salt Lake',
+            'west valley city': 'Salt Lake', 'west valley': 'Salt Lake',
+            'sandy': 'Salt Lake', 'south jordan': 'Salt Lake', 'west jordan': 'Salt Lake',
+            'murray': 'Salt Lake', 'draper': 'Salt Lake', 'millcreek': 'Salt Lake',
+            'midvale': 'Salt Lake', 'herriman': 'Salt Lake', 'riverton': 'Salt Lake',
+            'taylorsville': 'Salt Lake', 'holladay': 'Salt Lake',
+        }
+        county = CITY_COUNTY.get(city.lower(), 'Salt Lake')
         signals.append({
             'source_slug': slug, 'signal_type': 'mass_layoff', 'score': 50,
             'county': county, 'city': city,
@@ -659,33 +693,39 @@ def scrape_competitor_buyer_forms():
         prior = {rec['raw_address']: rec.get('raw_owner_name','') for rec in (r.json() if isinstance(r.json(),list) else [])}
     except: prior = {}
 
+    # FIX June 17: Routes to pp_market_data NOT pp_scraper_signals.
+    # competitor_form_change is website monitoring, not a buyer lead.
+    # Was scoring 65 -> Primed tier, corrupting buyer profile and match counts.
     for url, name, county in PAGES:
         try:
             r2 = safe_get(url, timeout=12)
             if not r2: continue
             soup = BeautifulSoup(r2.text, 'html.parser')
-            content = ' '.join([el.get_text(strip=True) for el in soup.select('form,button,h1,h2,h3,.cta')])[:1000]
-            current_hash = hashlib.md5(content.encode()).hexdigest()
-            prior_hash = prior.get(url, '')
-            if prior_hash and current_hash != prior_hash:
-                signals.append({
-                    'source_slug': slug, 'signal_type': 'competitor_form_change',
-                    'score': 65, 'county': county, 'city': None,
-                    'raw_owner_name': current_hash[:16],
-                    'raw_address': url,
-                    'raw_payload': json.dumps({'name': name, 'change_detected': True}),
-                })
-            elif not prior_hash:
-                signals.append({
-                    'source_slug': slug, 'signal_type': 'competitor_form_change',
-                    'score': 45, 'county': county, 'city': None,
-                    'raw_owner_name': current_hash[:16],
-                    'raw_address': url,
-                    'raw_payload': json.dumps({'name': name, 'baseline': True}),
-                })
+            page_content = ' '.join([el.get_text(strip=True) for el in soup.select('form,button,h1,h2,h3,.cta')])[:1000]
+            current_hash = hashlib.md5(page_content.encode()).hexdigest()
+            prior_payload = prior.get(url, '{}')
+            try: prior_hash = json.loads(prior_payload).get('hash', '')
+            except: prior_hash = ''
+            changed = bool(prior_hash and current_hash != prior_hash)
+            signals.append({
+                'source_slug': slug, 'signal_type': 'market_intelligence',
+                'score': 45, 'county': county, 'city': None,
+                'raw_address': url,
+                'raw_payload': json.dumps({'name': name, 'hash': current_hash, 'changed': changed}),
+                'captured_at': datetime.datetime.utcnow().isoformat(),
+            })
         except Exception as e:
             log.warning(f'[{slug}] {name}: {e}')
-    return post_batch(signals)
+    # Write to pp_market_data, NOT pp_scraper_signals
+    if not signals: return 0
+    mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data"
+    count = 0
+    for i in range(0, len(signals), 50):
+        chunk = signals[i:i+50]
+        r3 = SESSION.post(mkt_url, json=chunk, headers=HEADERS, timeout=20)
+        if r3.status_code in (200, 201, 204): count += len(chunk)
+    log.info(f'[{slug}] {count} records -> pp_market_data (market intelligence)')
+    return count
 
 # ─── SCHOOL DISTRICTS ─────────────────────────────────────────────────────────
 def scrape_school_district_enrollment():
@@ -1305,7 +1345,11 @@ def scrape_forsalebyowner_utah():
                 link = link_el['href'] if link_el else url
                 if not link.startswith('http'): link = url.split('/search')[0] + link
                 full = f'{title} {price}'.strip()
-                if full and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house']):
+                if (full
+                    and any(w in full.lower() for w in ['bed','bath','$','sqft','home','house'])
+                    and any(s in full.lower() for s in [', ut','utah','salt lake','provo',
+                        'orem','lehi','ogden','draper','sandy','murray','west jordan',
+                        'american fork','layton','bountiful','springville'])):
                     signals.append({
                         'source_slug': slug, 'signal_type': 'fsbo',
                         'score': 72, 'county': county, 'city': None,
