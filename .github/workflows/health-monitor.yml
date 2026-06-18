@@ -2,8 +2,9 @@ name: Pipeline Health Monitor
 
 on:
   schedule:
-    # Runs at 10:00 AM Mountain Time daily (6h after scraper)
-    # MDT: 16:00 UTC | MST: 17:00 UTC — both listed
+    # Runs once at 10 AM Mountain Time (after 4 AM scraper)
+    # Uses both UTC offsets to handle MDT/MST — only ONE should trigger per day
+    # but the check logic below prevents double-execution via Supabase run_log
     - cron: '0 16 * * *'
     - cron: '0 17 * * *'
   workflow_dispatch:
@@ -15,23 +16,51 @@ jobs:
       - name: Check last scraper run and re-trigger if stale
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
           TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
         run: |
+          # Check Supabase pp_run_log for any successful run today (ANY trigger, not just scraper-cron)
+          # This prevents the dual-cron from re-triggering when the pipeline already ran today
+          TODAY=$(date -u +%Y-%m-%d)
+          
           LAST_RUN=$(curl -s \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/runs?status=success&per_page=1" \
-            | python3 -c "import sys,json; runs=json.load(sys.stdin).get('workflow_runs',[]); print(runs[0]['updated_at'] if runs else 'never')")
+            "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&run_at=gte.${TODAY}T00:00:00Z&order=run_at.desc&limit=1&select=run_at" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+print(rows[0]['run_at'] if rows else 'never')
+")
 
-          echo "Last successful scraper run: $LAST_RUN"
+          echo "Last successful pipeline run today: $LAST_RUN"
 
-          if [ "$LAST_RUN" = "never" ]; then
+          if [ "$LAST_RUN" != "never" ]; then
+            echo "Pipeline already ran today ($LAST_RUN) — health check PASS, no re-trigger needed"
+            exit 0
+          fi
+
+          # Nothing ran today — check how long since last run overall
+          LAST_ANY=$(curl -s \
+            "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&order=run_at.desc&limit=1&select=run_at" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+print(rows[0]['run_at'] if rows else 'never')
+")
+
+          echo "Last successful run overall: $LAST_ANY"
+
+          if [ "$LAST_ANY" = "never" ]; then
             HOURS_AGO=999
           else
-            LAST_TS=$(date -d "$LAST_RUN" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_RUN" +%s)
+            LAST_TS=$(date -d "$LAST_ANY" +%s 2>/dev/null || python3 -c "import datetime; print(int(datetime.datetime.fromisoformat('$LAST_ANY'.replace('Z','+00:00')).timestamp()))")
             NOW_TS=$(date +%s)
             HOURS_AGO=$(( (NOW_TS - LAST_TS) / 3600 ))
           fi
@@ -39,7 +68,7 @@ jobs:
           echo "Hours since last run: $HOURS_AGO"
 
           if [ "$HOURS_AGO" -gt 28 ]; then
-            echo "Scraper stale — triggering re-run"
+            echo "Scraper stale ${HOURS_AGO}h — triggering re-run"
             curl -s -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github+json" \
@@ -53,5 +82,5 @@ jobs:
                 --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered"
             fi
           else
-            echo "Scraper healthy — last run ${HOURS_AGO}h ago"
+            echo "No run today yet but last run was ${HOURS_AGO}h ago — within acceptable window, no re-trigger"
           fi
