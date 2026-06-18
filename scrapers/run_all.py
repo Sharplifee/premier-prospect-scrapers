@@ -462,7 +462,7 @@ def scrape_fire_marshal_lp_hvac():     return scrape_fire_marshal('fire-marshal-
 def scrape_lir(slug, county, svc):
     log.info(f'[{slug}] starting')
     r = safe_get(f"{svc}/query", params={
-        'where':'1=1','outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE,OWN_NAME1,OWN_NAME2',
+        'where':'1=1','outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE',
         'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'
     }, timeout=25)
     if not r: return 0
@@ -473,6 +473,7 @@ def scrape_lir(slug, county, svc):
         a = f.get('attributes',{})
         addr = a.get('PARCEL_ADD','')
         city = a.get('PARCEL_CITY','')
+        # OWN_NAME1/OWN_NAME2 only exist on Utah/Wasatch/Summit LIR via scrapers_realtime
         own1 = a.get('OWN_NAME1','') or ''
         own2 = a.get('OWN_NAME2','') or ''
         owner = ' '.join(filter(None, [own1.strip(), own2.strip()])).strip() or None
@@ -480,7 +481,7 @@ def scrape_lir(slug, county, svc):
         signals.append({
             'source_slug': slug, 'signal_type': 'lir_parcel', 'score': 45,
             'county': county, 'city': city or None,
-            'raw_owner_name': clean_owner(owner),
+            'raw_owner_name': clean_owner(owner) if owner else None,
             'raw_address': f"{addr}, {city}".strip(', ') if city else addr,
         })
     return post_batch(signals)
@@ -1391,32 +1392,44 @@ def scrape_zillow_home_values():
 # ─── MLS SCRAPERS — session-cookie auth (shakel/Ronnal13=, member 88098) ──────
 def scrape_mls_expired():
     try:
-        from scrapers import mls_expired_listings
-        return mls_expired_listings.run()
+        import importlib.util, os as _os, sys as _sys
+        _scraper_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'scrapers')
+        if _scraper_dir not in _sys.path: _sys.path.insert(0, _scraper_dir)
+        _mod = importlib.import_module('mls_expired_listings')
+        return _mod.run()
     except Exception as e:
         log.warning(f'[mls-expired-listings] {type(e).__name__}: {e}')
         return 0
 
 def scrape_mls_price_reductions():
     try:
-        from scrapers import mls_price_reductions
-        return mls_price_reductions.run()
+        import importlib.util, os as _os, sys as _sys
+        _scraper_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'scrapers')
+        if _scraper_dir not in _sys.path: _sys.path.insert(0, _scraper_dir)
+        _mod = importlib.import_module('mls_price_reductions')
+        return _mod.run()
     except Exception as e:
         log.warning(f'[mls-price-reductions] {type(e).__name__}: {e}')
         return 0
 
 def scrape_mls_high_dom():
     try:
-        from scrapers import mls_high_dom
-        return mls_high_dom.run()
+        import importlib.util, os as _os, sys as _sys
+        _scraper_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'scrapers')
+        if _scraper_dir not in _sys.path: _sys.path.insert(0, _scraper_dir)
+        _mod = importlib.import_module('mls_high_dom')
+        return _mod.run()
     except Exception as e:
         log.warning(f'[mls-high-dom] {type(e).__name__}: {e}')
         return 0
 
 def scrape_mls_withdrawn():
     try:
-        from scrapers import mls_withdrawn_listings
-        return mls_withdrawn_listings.run()
+        import importlib.util, os as _os, sys as _sys
+        _scraper_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'scrapers')
+        if _scraper_dir not in _sys.path: _sys.path.insert(0, _scraper_dir)
+        _mod = importlib.import_module('mls_withdrawn_listings')
+        return _mod.run()
     except Exception as e:
         log.warning(f'[mls-withdrawn-listings] {type(e).__name__}: {e}')
         return 0
