@@ -27,32 +27,51 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 
 # Use quad-redundancy auth engine when available
 try:
-    from ure_auth_engine import get_authenticated_session as _get_session
-    from ure_session import parse_search_listnos, parse_listing
-    def _make_session():
-        return _get_session()
+    from ure_auth_engine import get_authenticated_session as _get_session, _current_cookie
+    from ure_session import parse_search_listnos, parse_listing, search_perform, get_listing_html
+    _HAS_AUTH_ENGINE = True
 except ImportError:
+    _HAS_AUTH_ENGINE = False
     try:
-        from scrapers.ure_session import get_session as _raw_sess, parse_search_listnos, parse_listing
+        from scrapers.ure_session import parse_search_listnos, parse_listing, search_perform, get_listing_html
     except ImportError:
-        from ure_session import get_session as _raw_sess, parse_search_listnos, parse_listing
-    def _make_session():
-        s = _raw_sess()
-        s.ensure_alive()
-        return s
+        from ure_session import parse_search_listnos, parse_listing, search_perform, get_listing_html
+
+URE_BASE = 'https://www.utahrealestate.com'
+
+def _get_auth_session():
+    """Returns (session, cookie) — works with auth engine or direct cookie env var."""
+    cookie = os.environ.get('URE_SESSION_COOKIE', '')
+    if _HAS_AUTH_ENGINE:
+        try:
+            sess = _get_session()
+            from ure_auth_engine import _current_cookie as cc
+            if cc:
+                return sess, cc
+        except Exception:
+            pass
+    # Fallback: build session from URE_SESSION_COOKIE env var directly
+    sess = requests.Session()
+    sess.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Cookie': cookie,
+        'x-requested-with': 'XMLHttpRequest',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': f'{URE_BASE}/search/form/type/1/name/quick',
+    })
+    return sess, cookie
 
 def run() -> int:
-    # auth engine loaded at module level
-
     log.info(f'[{SOURCE_SLUG}] starting')
-    sess = _make_session()
-    if not sess.ensure_alive():
-        log.warning(f'[{SOURCE_SLUG}] session could not authenticate — attempting anyway')
+    sess, cookie = _get_auth_session()
+    if not cookie:
+        log.warning(f'[{SOURCE_SLUG}] no URE session cookie — skipping')
+        return 0
 
     signals, seen = [], set()
 
     for page in range(1, 6):
-        html = sess.search_perform(checksum=CHECKSUM, page=page)
+        html = search_perform(sess, cookie, checksum=CHECKSUM, page=page)
         listnos = parse_search_listnos(html) if html else []
         log.info(f'[{SOURCE_SLUG}] page {page}: {len(listnos)} listing IDs found')
         if not listnos:
@@ -61,7 +80,7 @@ def run() -> int:
             if listno in seen:
                 continue
             seen.add(listno)
-            detail_html = sess.get_listing(listno)
+            detail_html = get_listing_html(sess, cookie, listno)
             listing = parse_listing(detail_html, listno)
             if not listing:
                 continue
