@@ -11,6 +11,45 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 log = logging.getLogger(__name__)
+# ── Self-contained MLS helpers (no ure_session import dependency) ───────────
+_URE_BASE = 'https://www.utahrealestate.com'
+
+def _ure_headers(cookie, referer=''):
+    return {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Cookie': cookie,
+        'x-requested-with': 'XMLHttpRequest',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Referer': referer or _URE_BASE + '/',
+        'cache-control': 'no-cache',
+    }
+
+def __search_perform(sess, cookie, checksum, page=1, per_page=25):
+    start = (page - 1) * per_page
+    url = f'{_URE_BASE}/search/perform/format/json/type/1/count/{per_page}/start/{start}/checksum/{checksum}'
+    try:
+        r = sess.get(url, headers=_ure_headers(cookie, _URE_BASE + '/search/form/type/1/'), timeout=20)
+        return r.content if r.status_code == 200 else b''
+    except Exception as e:
+        log.warning(f'_search_perform p{page}: {e}')
+        return b''
+
+def __get_listing_html(sess, cookie, listno):
+    try:
+        r = sess.get(f'{_URE_BASE}/member/{listno}',
+            headers=_ure_headers(cookie, _URE_BASE + '/search/results/'), timeout=15)
+        return r.content if r.status_code == 200 else b''
+    except Exception as e:
+        log.warning(f'_get_listing_html {listno}: {e}')
+        return b''
+
+def _get_ure_session():
+    """Get authenticated session using URE_SESSION_COOKIE env var directly."""
+    cookie = os.environ.get('URE_SESSION_COOKIE', '')
+    sess = requests.Session()
+    sess.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'})
+    return sess, cookie
+
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 SOURCE_SLUG  = 'mls-expired-listings'
@@ -63,7 +102,7 @@ def _get_auth_session():
 
 def run() -> int:
     log.info(f'[{SOURCE_SLUG}] starting')
-    sess, cookie = _get_auth_session()
+    sess, cookie = _get_ure_session()
     if not cookie:
         log.warning(f'[{SOURCE_SLUG}] no URE session cookie — skipping')
         return 0
@@ -71,7 +110,7 @@ def run() -> int:
     signals, seen = [], set()
 
     for page in range(1, 6):
-        html = search_perform(sess, cookie, checksum=CHECKSUM, page=page)
+        html = _search_perform(sess, cookie, checksum=CHECKSUM, page=page)
         listnos = parse_search_listnos(html) if html else []
         log.info(f'[{SOURCE_SLUG}] page {page}: {len(listnos)} listing IDs found')
         if not listnos:
@@ -80,7 +119,7 @@ def run() -> int:
             if listno in seen:
                 continue
             seen.add(listno)
-            detail_html = get_listing_html(sess, cookie, listno)
+            detail_html = _get_listing_html(sess, cookie, listno)
             listing = parse_listing(detail_html, listno)
             if not listing:
                 continue
