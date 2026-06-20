@@ -311,3 +311,22 @@ def get_session() -> URESession:
     if _session is None:
         _session = URESession()
     return _session
+
+
+def get_listing_html(sess: requests.Session, cookie: str, listno: str) -> bytes:
+    """Fetch a single MLS listing page — returns raw HTML bytes."""
+    URE_BASE = 'https://www.utahrealestate.com'
+    try:
+        r = sess.get(
+            f'{URE_BASE}/member/{listno}',
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                'Cookie': cookie,
+                'Referer': f'{URE_BASE}/search/results/',
+            },
+            timeout=15)
+        return r.content if r.status_code == 200 else b''
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f'get_listing_html {listno}: {e}')
+        return b''
