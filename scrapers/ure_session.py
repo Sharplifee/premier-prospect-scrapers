@@ -19,7 +19,6 @@ except ImportError:
 
 # ── CREDENTIALS os, logging, re, time, requests
 
-log = logging.getLogger(__name__)
 
 # ── CREDENTIALS ───────────────────────────────────────────────────────────────
 URE_USERNAME    = os.environ.get('URE_USERNAME', 'shakel')
