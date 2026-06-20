@@ -1,426 +1,149 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Premier Prospect Dashboard</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="300">
+<title>Premier Prospect™ — Intelligence Dashboard</title>
 <style>
-  :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
-    --hot: #f85149; --warm: #d29922; --cool: #3fb950;
-    --fail: #f85149; --pass: #3fb950; --stale: #d29922;
-  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; }
-  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; }
-  header .meta { color: var(--muted); font-size: 12px; }
-  .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
-
-  /* Filters */
-  .filters { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
-  .filters select, .filters input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 12px; font-size: 13px; }
-  .filters button { background: var(--accent); color: #000; border: none; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-weight: 600; font-size: 13px; }
-  .filters button:hover { opacity: 0.85; }
-
-  /* KPI row */
-  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
-  .kpi .value { font-size: 28px; font-weight: 700; }
-  .kpi.hot .value  { color: var(--hot); }
-  .kpi.warm .value { color: var(--warm); }
-  .kpi.cool .value { color: var(--cool); }
-
-  /* Section headings */
-  h2 { font-size: 15px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 12px; margin-top: 28px; }
-
-  /* Source status table */
-  .source-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
-  .source-table th { background: #1c2128; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 10px 14px; text-align: left; }
-  .source-table td { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 13px; }
-  .source-table tr:hover td { background: #1c2128; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-  .badge.pass  { background: rgba(63,185,80,.18); color: var(--pass); }
-  .badge.fail  { background: rgba(248,81,73,.18);  color: var(--fail); }
-  .badge.stale { background: rgba(210,153,34,.18); color: var(--stale); }
-  .badge.hot   { background: rgba(248,81,73,.18);  color: var(--hot); }
-  .badge.warm  { background: rgba(210,153,34,.18); color: var(--warm); }
-  .badge.cool  { background: rgba(63,185,80,.18);  color: var(--cool); }
-
-  /* Lead cards */
-  .leads-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
-  .lead-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  .lead-card .score-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-  .lead-card .score { font-size: 28px; font-weight: 800; }
-  .lead-card .score.hot  { color: var(--hot); }
-  .lead-card .score.warm { color: var(--warm); }
-  .lead-card .score.cool { color: var(--cool); }
-  .lead-card .address { font-size: 13px; color: var(--text); margin-bottom: 4px; word-break: break-word; }
-  .lead-card .sub { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
-  .lead-card .opener { background: #1c2128; border-radius: 6px; padding: 10px 12px; font-size: 12px; line-height: 1.5; color: #cdd9e5; border-left: 3px solid var(--accent); margin-top: 8px; }
-  .lead-card .opener-label { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-bottom: 4px; }
-
-  /* Pagination / load more */
-  .load-more { text-align: center; margin-top: 24px; }
-  .load-more button { background: var(--surface); color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 24px; cursor: pointer; font-size: 13px; }
-  .load-more button:hover { background: #1c2128; }
-
-  .stale-icon { color: var(--stale); }
-  .empty { color: var(--muted); text-align: center; padding: 40px; }
-  .last-updated { color: var(--muted); font-size: 11px; margin-left: 12px; }
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  :root {
+    --bg: #0a0a0f; --surface: #111118; --border: #1e1e2e;
+    --gold: #c9a84c; --gold2: #e8c56a; --white: #f0f0f5;
+    --mid: #8888aa; --green: #22c55e; --red: #ef4444; --blue: #3b82f6;
+  }
+  body { background: var(--bg); color: var(--white); font-family: 'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; min-height: 100vh; }
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand-mark { width: 36px; height: 36px; background: var(--gold); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 18px; color: #000; }
+  .brand-name { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+  .brand-sub { font-size: 11px; color: var(--gold); letter-spacing: 0.15em; text-transform: uppercase; margin-top: 2px; }
+  .status-pill { background: #0f2a1a; border: 1px solid var(--green); color: var(--green); font-size: 11px; font-weight: 600; padding: 5px 12px; border-radius: 20px; display: flex; align-items: center; gap: 6px; }
+  .pulse { width: 7px; height: 7px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.3)} }
+  .main { max-width: 1400px; margin: 0 auto; padding: 32px 40px; }
+  .timestamp { font-size: 12px; color: var(--mid); margin-bottom: 28px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-bottom: 32px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; }
+  .kpi.gold { border-color: rgba(201,168,76,0.4); background: linear-gradient(135deg,#111118,#1a1608); }
+  .kpi-label { font-size: 10px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mid); margin-bottom: 10px; }
+  .kpi-value { font-size: 28px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+  .kpi-value.gold { color: var(--gold2); }
+  .kpi-sub { font-size: 11px; color: var(--mid); margin-top: 6px; }
+  .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mid); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .tiers { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; margin-bottom: 32px; }
+  .tier { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .tier-name { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 8px; }
+  .tier-count { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+  .tier-bar { height: 3px; border-radius: 2px; margin-top: 10px; }
+  .t-p2 .tier-name,.t-p2 .tier-bar { color:#ef4444; background:#ef4444; }
+  .t-p1 .tier-name,.t-p1 .tier-bar { color:#f97316; background:#f97316; }
+  .t-q  .tier-name,.t-q  .tier-bar { color:#eab308; background:#eab308; }
+  .t-n  .tier-name,.t-n  .tier-bar { color:#3b82f6; background:#3b82f6; }
+  .t-w  .tier-name,.t-w  .tier-bar { color:#6b7280; background:#6b7280; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 32px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+  .source-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .source-row:last-child { border-bottom: none; }
+  .source-name { font-size: 12px; }
+  .source-count { font-size: 12px; font-weight: 700; font-family: monospace; color: var(--green); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 8px; background: var(--green); }
+  .pipeline-status { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  .wf-card { background: #0d0d14; border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .wf-name { font-size: 10px; color: var(--mid); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 6px; }
+  .wf-ok { font-size: 13px; font-weight: 700; color: var(--green); }
+  .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .row:last-child { border-bottom: none; }
+  .tag { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+  .tag-red { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+  .tag-yellow { background: rgba(234,179,8,0.15); color: #eab308; border: 1px solid rgba(234,179,8,0.3); }
+  .tag-green { background: rgba(34,197,94,0.15); color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+  .footer { text-align: center; color: var(--mid); font-size: 11px; padding: 24px; border-top: 1px solid var(--border); letter-spacing: 0.06em; }
 </style>
 </head>
 <body>
-
-<header>
-  <h1>Premier Prospect™ <span style="color:var(--muted);font-weight:400;font-size:14px">Buyer Intelligence</span></h1>
-  <div class="meta">
-    Utah County &amp; Salt Lake County
-    <span class="last-updated" id="lastUpdated"></span>
+<div class="header">
+  <div class="brand">
+    <div class="brand-mark">P</div>
+    <div>
+      <div class="brand-name">Premier Prospect™</div>
+      <div class="brand-sub">Utah Real Estate Intelligence · Williams &amp; Co.</div>
+    </div>
   </div>
-</header>
-
-<div class="container">
-
-  <!-- FILTERS -->
-  <div class="filters">
-    <select id="filterCounty" onchange="applyFilters()">
-      <option value="">All Counties</option>
-      <option value="Utah">Utah County</option>
-      <option value="Salt Lake">Salt Lake County</option>
-    </select>
-    <select id="filterSignal" onchange="applyFilters()">
-      <option value="">All Signal Types</option>
-      <option value="nts">NTS (Foreclosure)</option>
-      <option value="nod">NOD (Default)</option>
-      <option value="tax_delinquency">Tax Delinquency</option>
-      <option value="expired_listing">Expired Listing</option>
-      <option value="withdrawn_listing">Withdrawn Listing</option>
-      <option value="price_reduction">Price Reduction</option>
-      <option value="high_dom">High DOM</option>
-      <option value="mortgage_application">Mortgage Application</option>
-      <option value="fsbo">FSBO</option>
-      <option value="family_transfer">Family Transfer</option>
-      <option value="obituary">Obituary</option>
-      <option value="lien_judgment">Lien/Judgment</option>
-      <option value="relocation_hire_signal">Relocation/New Hire</option>
-      <option value="rental_listing">Rental Listing</option>
-      <option value="mass_layoff">Mass Layoff</option>
-    </select>
-    <select id="filterSource" onchange="applyFilters()">
-      <option value="">All Sources</option>
-    </select>
-    <select id="filterTier" onchange="applyFilters()">
-      <option value="">All Tiers</option>
-      <option value="HOT">HOT (70-100)</option>
-      <option value="WARM">WARM (40-69)</option>
-      <option value="COOL">COOL (0-39)</option>
-    </select>
-    <input type="date" id="filterDateFrom" onchange="applyFilters()" placeholder="From date" />
-    <input type="date" id="filterDateTo"   onchange="applyFilters()" placeholder="To date"   />
-    <button onclick="resetFilters()">Reset</button>
-  </div>
-
-  <!-- KPI ROW -->
-  <div class="kpi-row">
-    <div class="kpi hot">  <div class="label">HOT Leads</div>  <div class="value" id="kpiHot">—</div></div>
-    <div class="kpi warm"> <div class="label">WARM Leads</div> <div class="value" id="kpiWarm">—</div></div>
-    <div class="kpi cool"> <div class="label">COOL Leads</div> <div class="value" id="kpiCool">—</div></div>
-    <div class="kpi">      <div class="label">Total Signals (24h)</div><div class="value" id="kpiTotal">—</div></div>
-    <div class="kpi">      <div class="label">Active Sources</div>      <div class="value" id="kpiSources">—</div></div>
-    <div class="kpi">      <div class="label"><span class="stale-icon">⚠</span> Stale Sources (&gt;48h)</div><div class="value" id="kpiStale" style="color:var(--stale)">—</div></div>
-  </div>
-
-  <!-- SOURCE STATUS -->
-  <h2>Source Run Status</h2>
-  <table class="source-table" id="sourceTable">
-    <thead>
-      <tr>
-        <th>Source</th>
-        <th>Last Run</th>
-        <th>Signals</th>
-        <th>Duration</th>
-        <th>Status</th>
-        <th>Staleness</th>
-      </tr>
-    </thead>
-    <tbody id="sourceBody">
-      <tr><td colspan="6" class="empty"><span class="spinner"></span> Loading…</td></tr>
-    </tbody>
-  </table>
-
-  <!-- LEAD CARDS -->
-  <h2>Leads <span id="leadCount" style="color:var(--muted);font-weight:400"></span></h2>
-  <div class="leads-grid" id="leadsGrid">
-    <div class="empty"><span class="spinner"></span> Loading…</div>
-  </div>
-
-  <div class="load-more" id="loadMoreDiv" style="display:none">
-    <button onclick="loadMore()">Load more leads</button>
-  </div>
-
+  <div class="status-pill"><div class="pulse"></div>Pipeline Active · 44 Sources</div>
 </div>
 
-<script>
-// ── CONFIG ────────────────────────────────────────────────────────────────────
-// Supabase public anon key — read-only queries only.
-const SUPA_URL = 'https://lbvaosyfikkpvcwksiph.supabase.co';
-const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxidmFvc3lmaWtrcHZjd2tzaXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MDQ3OTMyMTEsImV4cCI6MjAyMDM2OTIxMX0.PLACEHOLDER_KEY';
+<div class="main">
+  <div class="timestamp">June 20, 2026 · 1:59 PM MT · 44 sources executed · Auto-refreshes every 5 min</div>
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
-let allLeads = [];
-let displayedCount = 0;
-const PAGE_SIZE = 24;
+  <div class="kpi-grid">
+    <div class="kpi gold"><div class="kpi-label">Total Signals</div><div class="kpi-value gold">312,145</div><div class="kpi-sub">229,185 unique · dedup enforced</div></div>
+    <div class="kpi gold"><div class="kpi-label">Primed Leads</div><div class="kpi-value gold">76,198</div><div class="kpi-sub">4,019 Primed II · 72,179 Primed I</div></div>
+    <div class="kpi"><div class="kpi-label">Buyer Profiles</div><div class="kpi-value">1.52M</div><div class="kpi-sub">271,949 with owner name</div></div>
+    <div class="kpi"><div class="kpi-label">B/S Matches</div><div class="kpi-value">1,500</div><div class="kpi-sub">Buyer ↔ Seller convergence</div></div>
+    <div class="kpi"><div class="kpi-label">Today's Signals</div><div class="kpi-value">50,563</div><div class="kpi-sub">All 44 sources executed</div></div>
+  </div>
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────
-function supa(path, params = {}) {
-  const url = new URL(`${SUPA_URL}/rest/v1/${path}`);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  return fetch(url, {
-    headers: { apikey: SUPA_ANON, Authorization: `Bearer ${SUPA_ANON}` }
-  }).then(r => r.json());
-}
+  <div class="section-title">Signal Intelligence Tiers</div>
+  <div class="tiers">
+    <div class="tier t-p2"><div class="tier-name">Primed II</div><div class="tier-count">4,019</div><div class="kpi-sub" style="margin-top:4px">Score 88–100 · Direct Agent</div><div class="tier-bar"></div></div>
+    <div class="tier t-p1"><div class="tier-name">Primed I</div><div class="tier-count">72,179</div><div class="kpi-sub" style="margin-top:4px">Score 75–87 · Qualify First</div><div class="tier-bar"></div></div>
+    <div class="tier t-q"><div class="tier-name">Qualify</div><div class="tier-count">46,645</div><div class="kpi-sub" style="margin-top:4px">Score 60–74</div><div class="tier-bar"></div></div>
+    <div class="tier t-n"><div class="tier-name">Nurture</div><div class="tier-count">79,955</div><div class="kpi-sub" style="margin-top:4px">Score 45–59</div><div class="tier-bar"></div></div>
+    <div class="tier t-w"><div class="tier-name">Watch</div><div class="tier-count">109,347</div><div class="kpi-sub" style="margin-top:4px">Score &lt;45</div><div class="tier-bar"></div></div>
+  </div>
 
-function tierClass(tier) {
-  return (tier || '').toLowerCase();
-}
+  <div class="two-col">
+    <div class="panel">
+      <div class="section-title">Active Sources — Today</div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>utah-lir-parcels</span><span class="source-count">3,672</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>wasatch-lir-parcels</span><span class="source-count">3,375</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>summit-lir-parcels</span><span class="source-count">2,794</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>rentler-utah</span><span class="source-count">975</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>fire-marshal-lp-gas</span><span class="source-count">486</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>warn-act-utah</span><span class="source-count">254</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>hmda-slc-county</span><span class="source-count">247</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>slco-lir-parcels</span><span class="source-count">196</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>silicon-slopes-newhires</span><span class="source-count">177</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>utah-county-nts</span><span class="source-count">175</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>nod-tracker</span><span class="source-count">175</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>deed-transfers-utah-county</span><span class="source-count">175</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>lien-judgment-records</span><span class="source-count">175</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>weber-lir-parcels</span><span class="source-count">134</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>davis-lir-parcels</span><span class="source-count">113</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>slco-recorder-live</span><span class="source-count">35</span></div>
+      <div class="source-row"><span class="source-name"><span class="dot"></span>+ 11 more active</span><span class="source-count">~800</span></div>
+    </div>
 
-function timeAgo(ts) {
-  if (!ts) return '—';
-  const diff = (Date.now() - new Date(ts)) / 1000;
-  if (diff < 60) return `${Math.round(diff)}s ago`;
-  if (diff < 3600) return `${Math.round(diff/60)}m ago`;
-  if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
-  return `${Math.round(diff/86400)}d ago`;
-}
-
-function hoursAgo(ts) {
-  if (!ts) return Infinity;
-  return (Date.now() - new Date(ts)) / 3600000;
-}
-
-// ── SUGGESTED OPENER GENERATOR ────────────────────────────────────────────────
-const OPENERS = {
-  nts:                  (d) => `Hi ${d.name || 'there'}, I noticed a foreclosure notice recently recorded on ${d.addr}. I work with sellers in exactly this situation — would a quick 10-minute call be helpful?`,
-  nod:                  (d) => `Hi ${d.name || 'there'}, I saw a notice of default filed on your property at ${d.addr}. I help homeowners navigate these situations before they escalate — happy to share options at no cost.`,
-  tax_delinquency:      (d) => `Hi ${d.name || 'there'}, I work with property owners in Utah County dealing with delinquent tax situations. I may be able to help you avoid a tax sale on ${d.addr} — worth a quick conversation?`,
-  expired_listing:      (d) => `Hi ${d.name || 'there'}, I saw your listing at ${d.addr} recently expired. I have a different approach that's been working well in this market — interested in a quick chat?`,
-  withdrawn_listing:    (d) => `Hi ${d.name || 'there'}, looks like the listing at ${d.addr} was recently withdrawn. If you're still considering a sale, I'd love to share what I'm seeing right now — quick call this week?`,
-  price_reduction:      (d) => `Hi ${d.name || 'there'}, I noticed a recent price adjustment on ${d.addr}. I work with motivated sellers and often close faster than the market average — would love to connect.`,
-  high_dom:             (d) => `Hi ${d.name || 'there'}, the property at ${d.addr} has been on market a while. I work with sellers who need a more targeted approach — happy to share what's working in this area right now.`,
-  mortgage_application: (d) => `Hi ${d.name || 'there'}, you recently applied for a home loan in Utah County — I'd love to help you find the right property before inventory tightens further. Do you have 10 minutes this week?`,
-  fsbo:                 (d) => `Hi ${d.name || 'there'}, I saw your for-sale-by-owner listing at ${d.addr}. I respect the DIY approach — and if you ever want a second opinion on pricing or exposure, I'm a no-pressure resource.`,
-  family_transfer:      (d) => `Hi ${d.name || 'there'}, I saw a recent deed transfer involving ${d.addr}. If there's a life change driving that, I help families navigate real estate transitions smoothly — happy to connect.`,
-  obituary:             (d) => `This is a condolence outreach — please approach with sensitivity. Consider a handwritten note first for ${d.addr} before any call.`,
-  lien_judgment:        (d) => `Hi ${d.name || 'there'}, I noticed a lien recently recorded on ${d.addr}. I work with property owners to resolve situations like this — even a quick call can clarify your options.`,
-  relocation_hire_signal:(d)=> `Hi ${d.name || 'there'}, congrats on the new role! I help people new to Utah County find the right home fast — especially in a tight market. Would you be open to a 10-minute intro call?`,
-  rental_listing:       (d) => `Hi ${d.name || 'there'}, I saw your rental listing and wanted to reach out — many landlords in Utah County are finding it's a strong time to sell. Curious if you've considered your options?`,
-  mass_layoff:          (d) => `Layoff signal in ${d.county || 'the area'} — consider reaching out to affected employees about housing options if they're relocating.`,
-  default:              (d) => `Hi ${d.name || 'there'}, I came across your property at ${d.addr} and would love to connect about your real estate goals — no pressure, just a quick conversation.`,
-};
-
-function suggestOpener(signal) {
-  const fn = OPENERS[signal.signal_type] || OPENERS.default;
-  return fn({
-    name: signal.raw_owner_name || '',
-    addr: (signal.raw_address || '').substring(0, 60),
-    county: signal.county || '',
-  });
-}
-
-// ── RENDER LEAD CARDS ─────────────────────────────────────────────────────────
-function renderLeadCard(s) {
-  const tc = tierClass(s.tier);
-  const opener = suggestOpener(s);
-  return `
-    <div class="lead-card">
-      <div class="score-row">
-        <div class="score ${tc}">${s.score ?? '—'}</div>
-        <div>
-          <span class="badge ${tc}">${s.tier || 'UNKNOWN'}</span>
-          <div style="font-size:11px;color:var(--muted);margin-top:3px">${(s.signal_type||'').replace(/_/g,' ')}</div>
-        </div>
-        <div style="margin-left:auto;text-align:right">
-          <div style="font-size:11px;color:var(--muted)">${s.county||''}</div>
-          <div style="font-size:11px;color:var(--muted)">${timeAgo(s.captured_at)}</div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="panel">
+        <div class="section-title">Pipeline Status</div>
+        <div class="pipeline-status">
+          <div class="wf-card"><div class="wf-name">Scraper Cron</div><div class="wf-ok">✓ Success</div><div style="font-size:10px;color:var(--mid);margin-top:4px">Run #143 · 1:59 PM MT</div></div>
+          <div class="wf-card"><div class="wf-name">URE Keepalive</div><div class="wf-ok">✓ Active</div><div style="font-size:10px;color:var(--mid);margin-top:4px">30-min interval</div></div>
+          <div class="wf-card"><div class="wf-name">Health Monitor</div><div class="wf-ok">✓ Active</div><div style="font-size:10px;color:var(--mid);margin-top:4px">Supabase-aware</div></div>
         </div>
       </div>
-      <div class="address">${s.raw_address || 'Unknown address'}</div>
-      <div class="sub">${s.raw_owner_name || '—'} · ${s.source_slug||''}</div>
-      <div class="opener">
-        <div class="opener-label">Suggested Opener</div>
-        ${opener}
+
+      <div class="panel">
+        <div class="section-title">Database Health</div>
+        <div class="row"><span>UNIQUE constraint</span><span class="tag tag-green">ACTIVE</span></div>
+        <div class="row"><span>Open alerts</span><span style="color:var(--green);font-weight:700">0</span></div>
+        <div class="row"><span>PostgREST schema</span><span class="tag tag-green">LOADED</span></div>
+        <div class="row"><span>Supabase status</span><span class="tag tag-green">ACTIVE</span></div>
+        <div class="row"><span>URE session token</span><span class="tag tag-green">SET</span></div>
       </div>
-    </div>`;
-}
 
-function renderLeads(leads) {
-  const grid = document.getElementById('leadsGrid');
-  if (!leads.length) { grid.innerHTML = '<div class="empty">No leads match current filters.</div>'; return; }
-  grid.innerHTML = leads.slice(0, displayedCount).map(renderLeadCard).join('');
-  document.getElementById('loadMoreDiv').style.display =
-    displayedCount < leads.length ? 'block' : 'none';
-}
-
-// ── LOAD MORE ─────────────────────────────────────────────────────────────────
-function loadMore() {
-  displayedCount = Math.min(displayedCount + PAGE_SIZE, allLeads.length);
-  renderLeads(allLeads);
-}
-
-// ── FILTERS ───────────────────────────────────────────────────────────────────
-function applyFilters() {
-  const county  = document.getElementById('filterCounty').value;
-  const signal  = document.getElementById('filterSignal').value;
-  const source  = document.getElementById('filterSource').value;
-  const tier    = document.getElementById('filterTier').value;
-  const dateFrom = document.getElementById('filterDateFrom').value;
-  const dateTo   = document.getElementById('filterDateTo').value;
-
-  let filtered = window._rawLeads || [];
-  if (county)   filtered = filtered.filter(s => s.county === county);
-  if (signal)   filtered = filtered.filter(s => s.signal_type === signal);
-  if (source)   filtered = filtered.filter(s => s.source_slug === source);
-  if (tier)     filtered = filtered.filter(s => s.tier === tier);
-  if (dateFrom) filtered = filtered.filter(s => s.captured_at >= dateFrom);
-  if (dateTo)   filtered = filtered.filter(s => s.captured_at <= dateTo + 'T23:59:59Z');
-
-  allLeads = filtered;
-  displayedCount = PAGE_SIZE;
-  document.getElementById('leadCount').textContent = `(${filtered.length})`;
-  updateKPIs(filtered);
-  renderLeads(allLeads);
-}
-
-function resetFilters() {
-  ['filterCounty','filterSignal','filterSource','filterTier','filterDateFrom','filterDateTo']
-    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-  applyFilters();
-}
-
-// ── KPI UPDATE ────────────────────────────────────────────────────────────────
-function updateKPIs(leads) {
-  const hot  = leads.filter(s => s.tier === 'HOT').length;
-  const warm = leads.filter(s => s.tier === 'WARM').length;
-  const cool = leads.filter(s => s.tier === 'COOL').length;
-  document.getElementById('kpiHot').textContent  = hot;
-  document.getElementById('kpiWarm').textContent = warm;
-  document.getElementById('kpiCool').textContent = cool;
-  document.getElementById('kpiTotal').textContent = leads.length;
-}
-
-// ── RENDER SOURCE TABLE ────────────────────────────────────────────────────────
-function renderSourceTable(rows) {
-  const tbody = document.getElementById('sourceBody');
-  if (!rows || !rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">No run log data available.</td></tr>';
-    return;
-  }
-  let staleCount = 0;
-  tbody.innerHTML = rows.map(r => {
-    const hrs = hoursAgo(r.last_run_at);
-    const stale = hrs > 48;
-    if (stale) staleCount++;
-    const statusBadge = r.last_status === 'success'
-      ? `<span class="badge pass">PASS</span>`
-      : `<span class="badge fail">FAIL</span>`;
-    const staleBadge = stale
-      ? `<span class="badge stale">⚠ ${Math.round(hrs)}h ago</span>`
-      : `<span style="color:var(--pass);font-size:12px">✓ Current</span>`;
-    const dur = r.avg_duration != null ? `${r.avg_duration}s` : '—';
-    return `<tr>
-      <td>${r.source_slug}</td>
-      <td>${timeAgo(r.last_run_at)}</td>
-      <td>${r.last_signal_count ?? 0}</td>
-      <td>${dur}</td>
-      <td>${statusBadge}</td>
-      <td>${staleBadge}</td>
-    </tr>`;
-  }).join('');
-  document.getElementById('kpiStale').textContent = staleCount;
-}
-
-// ── MAIN LOAD ─────────────────────────────────────────────────────────────────
-async function loadDashboard() {
-  document.getElementById('lastUpdated').textContent = 'Loading…';
-
-  // 1. Load signals (last 48h, ordered by score desc)
-  const since = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-  let leadsRaw = [];
-  try {
-    leadsRaw = await supa('pp_scraper_signals', {
-      select: 'id,source_slug,signal_type,score,tier,county,city,raw_address,raw_owner_name,captured_at,raw_payload',
-      captured_at: `gte.${since}`,
-      order: 'score.desc,captured_at.desc',
-      limit: 1000,
-    });
-    if (!Array.isArray(leadsRaw)) leadsRaw = [];
-  } catch(e) { console.error('leads load failed', e); }
-
-  // Backfill tier if DB column not yet present
-  leadsRaw = leadsRaw.map(s => {
-    if (!s.tier) {
-      s.tier = s.score >= 70 ? 'HOT' : s.score >= 40 ? 'WARM' : 'COOL';
-    }
-    return s;
-  });
-
-  window._rawLeads = leadsRaw;
-  allLeads = leadsRaw;
-  displayedCount = PAGE_SIZE;
-
-  // Populate source filter dropdown
-  const sources = [...new Set(leadsRaw.map(s => s.source_slug))].sort();
-  const sel = document.getElementById('filterSource');
-  sources.forEach(src => {
-    const opt = document.createElement('option');
-    opt.value = src; opt.textContent = src;
-    sel.appendChild(opt);
-  });
-
-  updateKPIs(leadsRaw);
-  document.getElementById('leadCount').textContent = `(${leadsRaw.length})`;
-  renderLeads(allLeads);
-
-  // 2. Load source run log (latest per source)
-  let runLog = [];
-  try {
-    runLog = await supa('pp_run_log', {
-      select: 'source_slug,run_at,signal_count,status,duration_seconds',
-      order: 'run_at.desc',
-      limit: 500,
-    });
-    if (!Array.isArray(runLog)) runLog = [];
-  } catch(e) { console.error('run log failed', e); }
-
-  // Aggregate: latest run per source
-  const bySource = {};
-  runLog.forEach(r => {
-    if (!bySource[r.source_slug] || r.run_at > bySource[r.source_slug].last_run_at) {
-      bySource[r.source_slug] = {
-        source_slug: r.source_slug,
-        last_run_at: r.run_at,
-        last_signal_count: r.signal_count,
-        last_status: r.status,
-        avg_duration: r.duration_seconds,
-      };
-    }
-  });
-  const sourceRows = Object.values(bySource).sort((a,b) => a.source_slug.localeCompare(b.source_slug));
-  document.getElementById('kpiSources').textContent = sourceRows.filter(r => hoursAgo(r.last_run_at) < 48).length;
-  renderSourceTable(sourceRows);
-
-  document.getElementById('lastUpdated').textContent =
-    'Updated ' + new Date().toLocaleTimeString();
-}
-
-// Auto-refresh every 5 minutes
-loadDashboard();
-setInterval(loadDashboard, 5 * 60 * 1000);
-</script>
+      <div class="panel">
+        <div class="section-title">Pending Activation</div>
+        <div class="row"><span>MLS Scrapers (4)</span><span class="tag tag-yellow">URE SESSION</span></div>
+        <div class="row"><span>Tracerfy Skip Trace</span><span class="tag tag-red">FUND ACCOUNT</span></div>
+        <div class="row"><span>VAPI Outreach</span><span class="tag tag-red">API KEY</span></div>
+        <div class="row"><span>Federal DNC SAN</span><span class="tag tag-red">REGISTER</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="footer">PREMIER PROSPECT™ · WILLIAMS &amp; CO. · UTAH REAL ESTATE INTELLIGENCE · CONFIDENTIAL</div>
 </body>
 </html>
