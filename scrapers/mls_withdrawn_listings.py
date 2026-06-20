@@ -36,9 +36,7 @@ except ImportError:
     except ImportError:
         from ure_session import get_session as _raw_sess, parse_search_listnos, parse_listing
     def _make_session():
-        s = _raw_sess()
-        s.ensure_alive()
-        return s
+        return _raw_sess()
 
 def run() -> int:
     # auth engine loaded at module level
@@ -48,7 +46,7 @@ def run() -> int:
     signals, seen = [], set()
 
     for page in range(1, 4):
-        html = sess.search_perform(checksum=CHECKSUM, page=page)
+        html = search_perform(sess, cookie, checksum=CHECKSUM, page=page)
         listnos = parse_search_listnos(html) if html else []
         log.info(f'[{SOURCE_SLUG}] page {page}: {len(listnos)} listings')
         if not listnos:
@@ -57,7 +55,7 @@ def run() -> int:
             if listno in seen:
                 continue
             seen.add(listno)
-            listing = parse_listing(sess.get_listing(listno), listno)
+            listing = parse_listing(get_listing_html(sess, cookie, listno), listno)
             if not listing:
                 continue
             county = listing.get('county', '').replace(' County', '').strip()
