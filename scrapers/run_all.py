@@ -274,6 +274,28 @@ def check_health(slug, count):
 def scrape_utah_county_nts():
     slug = 'utah-county-nts'
     log.info(f'[{slug}] starting')
+    import re as _re
+    # PLSS → city lookup (Township/Range determines geographic area)
+    PLSS_CITY = {
+        '4S Range 1E':'American Fork','4S Range 2E':'Alpine','4S Range 3W':'Cedar Hills',
+        '5S Range 1W':'Saratoga Springs','5S Range 2W':'Eagle Mountain',
+        '5S Range 1E':'Lehi','5S Range 2E':'Pleasant Grove',
+        '5S Range 3E':'Lindon','5S Range 4E':'Orem',
+        '6S Range 1W':'Provo','6S Range 2W':'Provo',
+        '6S Range 1E':'Provo','6S Range 2E':'Provo',
+        '6S Range 3E':'Spanish Fork','6S Range 3W':'Springville',
+        '7S Range 1W':'Salem','7S Range 2W':'Salem','7S Range 3W':'Payson',
+        '7S Range 2E':'Spanish Fork','7S Range 3E':'Mapleton',
+        '7S Range 4E':'Springville','7S Range 5E':'Woodland Hills',
+        '8S Range 1E':'Payson','8S Range 2E':'Santaquin',
+        '8S Range 2W':'Santaquin','8S Range 3E':'Woodland Hills',
+        '9S Range 1W':'Genola','9S Range 1E':'Santaquin','9S Range 2E':'Eureka',
+    }
+    def city_from_plss(section_text):
+        m = _re.search(r'Township (\d+S Range \d+[EW])', section_text or '')
+        if m: return PLSS_CITY.get(m.group(1))
+        return None
+
     signals = []
     for doc_type in ['RSUBTEE', 'NOTICE OF TRUSTEE', 'FORECLOSURE']:
         r = safe_post(
@@ -283,20 +305,36 @@ def scrape_utah_county_nts():
         )
         if not r: continue
         soup = BeautifulSoup(r.text, 'html.parser')
-        for row in soup.select('table tr')[1:]:
+        current_section = None  # Track current PLSS section grouping
+        for row in soup.select('table tr'):
             cells = row.select('td')
+            if not cells: continue
+            first = cells[0].get_text(strip=True)
+            # PLSS section header row (e.g. "Section 25 Township 4S Range 1E")
+            if 'Township' in first and 'Section' in first:
+                current_section = first
+                continue
             if len(cells) < 4: continue
+            # Skip header row
+            if first in ('Description', 'Rec Date', 'KOI', 'New Search', 'Main Menu'):
+                continue
             desc = cells[0].get_text(strip=True)
             rec_date = cells[1].get_text(strip=True)
-            entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+            entry = cells[3].get_text(strip=True).replace('\xa0', ' ').strip() if len(cells) > 3 else ''
             grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
+            if not entry or 'Entry' in entry.split()[0] if entry.split() else True: pass
             if not entry: continue
+            # Derive city from PLSS section header
+            city = city_from_plss(current_section)
             signals.append({
                 'source_slug': slug, 'signal_type': 'nts', 'score': 99,
-                'county': 'Utah', 'city': None,
+                'county': 'Utah', 'city': city,
                 'raw_owner_name': grantor or None,
-                'raw_address': f'Entry #{entry}',
-                'raw_payload': json.dumps({'doc_type': desc, 'rec_date': rec_date, 'entry': entry}),
+                'raw_address': f'{doc_type} — Entry #{entry}',
+                'raw_payload': json.dumps({
+                    'doc_type': desc, 'rec_date': rec_date,
+                    'entry': entry, 'plss_section': current_section or ''
+                }),
             })
     return post_batch(signals)
 
@@ -304,8 +342,29 @@ def scrape_utah_county_nts():
 def scrape_nod_tracker():
     slug = 'nod-tracker'
     log.info(f'[{slug}] starting')
+    import re as _re
+    PLSS_CITY = {
+        '4S Range 1E':'American Fork','4S Range 2E':'Alpine','4S Range 3W':'Cedar Hills',
+        '5S Range 1W':'Saratoga Springs','5S Range 2W':'Eagle Mountain',
+        '5S Range 1E':'Lehi','5S Range 2E':'Pleasant Grove',
+        '5S Range 3E':'Lindon','5S Range 4E':'Orem',
+        '6S Range 1W':'Provo','6S Range 2W':'Provo',
+        '6S Range 1E':'Provo','6S Range 2E':'Provo',
+        '6S Range 3E':'Spanish Fork','6S Range 3W':'Springville',
+        '7S Range 1W':'Salem','7S Range 2W':'Salem','7S Range 3W':'Payson',
+        '7S Range 2E':'Spanish Fork','7S Range 3E':'Mapleton',
+        '7S Range 4E':'Springville','7S Range 5E':'Woodland Hills',
+        '8S Range 1E':'Payson','8S Range 2E':'Santaquin',
+        '8S Range 2W':'Santaquin','8S Range 3E':'Woodland Hills',
+        '9S Range 1W':'Genola','9S Range 1E':'Santaquin','9S Range 2E':'Eureka',
+    }
+    def city_from_plss(section_text):
+        m = _re.search(r'Township (\d+S Range \d+[EW])', section_text or '')
+        if m: return PLSS_CITY.get(m.group(1))
+        return None
+
     signals = []
-    for doc_type in ['NOTICE OF DEFAULT']:  # DEED OF TRUST removed — routine mortgage, not distress
+    for doc_type in ['NOTICE OF DEFAULT']:
         r = safe_post(
             'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
             data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
@@ -313,20 +372,32 @@ def scrape_nod_tracker():
         )
         if not r: continue
         soup = BeautifulSoup(r.text, 'html.parser')
-        for row in soup.select('table tr')[1:]:
+        current_section = None
+        for row in soup.select('table tr'):
             cells = row.select('td')
+            if not cells: continue
+            first = cells[0].get_text(strip=True)
+            if 'Township' in first and 'Section' in first:
+                current_section = first
+                continue
             if len(cells) < 4: continue
-            entry = cells[3].get_text(strip=True) if len(cells) > 3 else ''
+            if first in ('Description', 'Rec Date', 'KOI', 'New Search', 'Main Menu'):
+                continue
+            entry = cells[3].get_text(strip=True).replace('\xa0', ' ').strip() if len(cells) > 3 else ''
             grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
             rec_date = cells[1].get_text(strip=True)
             if not entry: continue
+            city = city_from_plss(current_section)
             score = 88 if 'DEFAULT' in doc_type else 65
             signals.append({
                 'source_slug': slug, 'signal_type': 'nod', 'score': score,
-                'county': 'Utah', 'city': None,
+                'county': 'Utah', 'city': city,
                 'raw_owner_name': grantor or None,
-                'raw_address': f'Entry #{entry}',
-                'raw_payload': json.dumps({'doc_type': doc_type, 'rec_date': rec_date, 'entry': entry}),
+                'raw_address': f'NOTICE OF DEFAULT — Entry #{entry}',
+                'raw_payload': json.dumps({
+                    'doc_type': doc_type, 'rec_date': rec_date,
+                    'entry': entry, 'plss_section': current_section or ''
+                }),
             })
     return post_batch(signals)
 
