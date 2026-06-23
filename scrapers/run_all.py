@@ -1520,13 +1520,6 @@ def scrape_vapi_outreach():
         return vapi_outreach_trigger.run()
     except ImportError: return 0
 
-def scrape_dnc_check():
-    if not os.environ.get('DNC_SAN'): return 0
-    try:
-        from scrapers import dnc_compliance_check
-        return dnc_compliance_check.run()
-    except ImportError: return 0
-
 # ─── UVHBA DIRECTORY ─────────────────────────────────────────────────────────
 def scrape_uvhba_directory():
     """
@@ -1717,7 +1710,6 @@ SCRAPERS = [
     # Pending activation
     ('tracerfy-enrichment',         scrape_tracerfy),
     ('vapi-outreach',               scrape_vapi_outreach),
-    ('dnc-compliance',              scrape_dnc_check),
 ]
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
