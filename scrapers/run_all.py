@@ -1754,10 +1754,11 @@ if __name__ == '__main__':
     except Exception as e:
         log.warning(f'  populate buyer profiles failed: {e}')
 
-    # Step 2: Run matching engine — p_limit must match function arg name exactly
+    # Step 2: Matching engine via void wrapper (pp_trigger_matching_engine)
+    # Direct integer-return RPC causes PostgREST HTTP 500 — void wrapper resolves this
     try:
         r_match = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/pp_run_matching_engine",
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_trigger_matching_engine",
             headers={**HEADERS, 'Content-Type': 'application/json'},
             json={'p_limit': 500}, timeout=60
         )
@@ -1765,11 +1766,11 @@ if __name__ == '__main__':
     except Exception as e:
         log.warning(f'  matching engine failed: {e}')
 
-    # Step 3: KPI cache — void return; accept 200/204, log actual code
+    # Step 3: KPI cache — void return
     try:
         r_kpi = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
-            headers={**HEADERS, 'Content-Type': 'application/json', 'Accept': 'application/json'},
+            headers={**HEADERS, 'Content-Type': 'application/json'},
             json={}, timeout=30
         )
         log.info(f'  KPI cache: {r_kpi.status_code}')
