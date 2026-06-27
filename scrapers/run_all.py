@@ -27,14 +27,7 @@ log = logging.getLogger('pp.scrapers')
 SUPABASE_URL = os.environ['SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 APIFY_TOKEN  = os.environ.get('APIFY_TOKEN', '')
-# MLS credentials — session cookie auth (utahrealestate.com reverse-engineered)
-# URE_USERNAME: shakel (Kelvin's account)
-# URE_PASSWORD: Ronnal13= (set in GitHub Secrets)
-# URE_SESSION_COOKIE: persistent ure_login_token from browser session (optional but preferred)
-# All stored as GitHub Secrets — auto-login fires on every scraper run
-URE_USERNAME    = os.environ.get('URE_USERNAME', 'shakel')
-URE_PASSWORD    = os.environ.get('URE_PASSWORD', 'Ronnal13=')
-URE_SESSION_COOKIE = os.environ.get('URE_SESSION_COOKIE', '')
+# MLS scrapers pending auth resolution — credentials removed
 
 TABLE_URL = f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
 HEADERS = {
