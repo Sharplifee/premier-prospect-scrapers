@@ -272,10 +272,15 @@ def check_health(slug, count):
 
 # ─── UTAH COUNTY NTS ─────────────────────────────────────────────────────────
 def scrape_utah_county_nts():
+    """
+    Fix June 27 2026: Utah County DocDescSearch now returns ALL documents regardless
+    of DocDesc filter. Each data row includes its own PLSS section in cells[0].
+    Old logic skipped every row because it treated 'Township' rows as headers.
+    New logic: use GET with offset pagination, target Table[3], filter by KOI client-side.
+    """
     slug = 'utah-county-nts'
     log.info(f'[{slug}] starting')
     import re as _re
-    # PLSS → city lookup (Township/Range determines geographic area)
     PLSS_CITY = {
         '4S Range 1E':'American Fork','4S Range 2E':'Alpine','4S Range 3W':'Cedar Hills',
         '5S Range 1W':'Saratoga Springs','5S Range 2W':'Eagle Mountain',
@@ -291,55 +296,55 @@ def scrape_utah_county_nts():
         '8S Range 2W':'Santaquin','8S Range 3E':'Woodland Hills',
         '9S Range 1W':'Genola','9S Range 1E':'Santaquin','9S Range 2E':'Eureka',
     }
-    def city_from_plss(section_text):
-        m = _re.search(r'Township (\d+S Range \d+[EW])', section_text or '')
-        if m: return PLSS_CITY.get(m.group(1))
-        return None
+    NTS_KOIS = {'RSUBTEE','SUB TEE','SUBTEE','PRSUBTE'}
+    def city_from_plss(text):
+        m = _re.search(r'(\d+S Range \d+[EW])', text or '')
+        return PLSS_CITY.get(m.group(1)) if m else None
 
     signals = []
-    for doc_type in ['RSUBTEE', 'NOTICE OF TRUSTEE', 'FORECLOSURE']:
-        r = safe_post(
-            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-            data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
-            timeout=25
-        )
-        if not r: continue
+    base_url = 'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp?DocDesc=RSUBTEE&DateRange=30&County=Utah'
+    for offset in [0, 200, 400]:
+        r = safe_get(f'{base_url}&offset={offset}', timeout=25)
+        if not r or r.status_code != 200: break
         soup = BeautifulSoup(r.text, 'html.parser')
-        current_section = None  # Track current PLSS section grouping
-        for row in soup.select('table tr'):
-            cells = row.select('td')
-            if not cells: continue
-            first = cells[0].get_text(strip=True)
-            # PLSS section header row (e.g. "Section 25 Township 4S Range 1E")
-            if 'Township' in first and 'Section' in first:
-                current_section = first
-                continue
-            if len(cells) < 4: continue
-            # Skip header row
-            if first in ('Description', 'Rec Date', 'KOI', 'New Search', 'Main Menu'):
-                continue
-            desc = cells[0].get_text(strip=True)
-            rec_date = cells[1].get_text(strip=True)
-            entry = cells[3].get_text(strip=True).replace('\xa0', ' ').strip() if len(cells) > 3 else ''
-            grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
-            if not entry or 'Entry' in entry.split()[0] if entry.split() else True: pass
-            if not entry: continue
-            # Derive city from PLSS section header
-            city = city_from_plss(current_section)
+        tables = soup.find_all('table')
+        data_table = next((t for t in tables if t.find('tr') and
+            'Description' in [td.get_text(strip=True) for td in (t.find('tr').find_all('td') or [])]), None)
+        if not data_table: break
+        rows = data_table.find_all('tr')
+        page_count = 0
+        for row in rows[1:]:
+            cells = [td.get_text(strip=True) for td in row.find_all('td')]
+            if len(cells) < 5 or not any(cells): continue
+            koi = cells[2].strip().upper()
+            if koi not in NTS_KOIS: continue
+            plss = cells[0]
+            city = city_from_plss(plss)
+            rec_date = cells[1]
+            entry = cells[3].replace('\xa0', ' ').strip()
+            grantor = cells[4]
+            grantee = cells[5] if len(cells) > 5 else ''
             signals.append({
                 'source_slug': slug, 'signal_type': 'nts', 'score': 99,
                 'county': 'Utah', 'city': city,
                 'raw_owner_name': grantor or None,
-                'raw_address': f'{doc_type} — Entry #{entry}',
+                'raw_address': f'NTS — Entry #{entry}',
                 'raw_payload': json.dumps({
-                    'doc_type': desc, 'rec_date': rec_date,
-                    'entry': entry, 'plss_section': current_section or ''
+                    'koi': koi, 'rec_date': rec_date, 'entry': entry,
+                    'plss_section': plss, 'grantee': grantee
                 }),
             })
+            page_count += 1
+        if 'Next' not in r.text: break
     return post_batch(signals)
 
 # ─── NOD TRACKER ─────────────────────────────────────────────────────────────
 def scrape_nod_tracker():
+    """
+    Fix June 27 2026: Same DocDescSearch layout change as NTS scraper.
+    DocDesc filter broken server-side; filter by KOI client-side.
+    NOD KOI codes: 'N DEFAULT', 'DEFLT', 'NOD' — search broadly, filter narrowly.
+    """
     slug = 'nod-tracker'
     log.info(f'[{slug}] starting')
     import re as _re
@@ -358,47 +363,45 @@ def scrape_nod_tracker():
         '8S Range 2W':'Santaquin','8S Range 3E':'Woodland Hills',
         '9S Range 1W':'Genola','9S Range 1E':'Santaquin','9S Range 2E':'Eureka',
     }
-    def city_from_plss(section_text):
-        m = _re.search(r'Township (\d+S Range \d+[EW])', section_text or '')
-        if m: return PLSS_CITY.get(m.group(1))
-        return None
+    NOD_KOIS = {'N DEFAULT','DEFLT','NOD','NOTICE OF DEFAULT','N DEF'}
+    def city_from_plss(text):
+        m = _re.search(r'(\d+S Range \d+[EW])', text or '')
+        return PLSS_CITY.get(m.group(1)) if m else None
 
     signals = []
-    for doc_type in ['NOTICE OF DEFAULT']:
-        r = safe_post(
-            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-            data={'DocDesc': doc_type, 'DateRange': '30', 'County': 'Utah'},
-            timeout=25
-        )
-        if not r: continue
+    base_url = 'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp?DocDesc=DEFAULT&DateRange=30&County=Utah'
+    for offset in [0, 200, 400]:
+        r = safe_get(f'{base_url}&offset={offset}', timeout=25)
+        if not r or r.status_code != 200: break
         soup = BeautifulSoup(r.text, 'html.parser')
-        current_section = None
-        for row in soup.select('table tr'):
-            cells = row.select('td')
-            if not cells: continue
-            first = cells[0].get_text(strip=True)
-            if 'Township' in first and 'Section' in first:
-                current_section = first
-                continue
-            if len(cells) < 4: continue
-            if first in ('Description', 'Rec Date', 'KOI', 'New Search', 'Main Menu'):
-                continue
-            entry = cells[3].get_text(strip=True).replace('\xa0', ' ').strip() if len(cells) > 3 else ''
-            grantor = cells[4].get_text(strip=True) if len(cells) > 4 else ''
-            rec_date = cells[1].get_text(strip=True)
-            if not entry: continue
-            city = city_from_plss(current_section)
-            score = 88 if 'DEFAULT' in doc_type else 65
+        tables = soup.find_all('table')
+        data_table = next((t for t in tables if t.find('tr') and
+            'Description' in [td.get_text(strip=True) for td in (t.find('tr').find_all('td') or [])]), None)
+        if not data_table: break
+        rows = data_table.find_all('tr')
+        page_count = 0
+        for row in rows[1:]:
+            cells = [td.get_text(strip=True) for td in row.find_all('td')]
+            if len(cells) < 5 or not any(cells): continue
+            koi = cells[2].strip().upper()
+            if koi not in NOD_KOIS and 'DEFAULT' not in koi: continue
+            plss = cells[0]
+            city = city_from_plss(plss)
+            rec_date = cells[1]
+            entry = cells[3].replace('\xa0', ' ').strip()
+            grantor = cells[4]
             signals.append({
-                'source_slug': slug, 'signal_type': 'nod', 'score': score,
+                'source_slug': slug, 'signal_type': 'nod', 'score': 88,
                 'county': 'Utah', 'city': city,
                 'raw_owner_name': grantor or None,
-                'raw_address': f'NOTICE OF DEFAULT — Entry #{entry}',
+                'raw_address': f'NOD — Entry #{entry}',
                 'raw_payload': json.dumps({
-                    'doc_type': doc_type, 'rec_date': rec_date,
-                    'entry': entry, 'plss_section': current_section or ''
+                    'koi': koi, 'rec_date': rec_date,
+                    'entry': entry, 'plss_section': plss
                 }),
             })
+            page_count += 1
+        if 'Next' not in r.text: break
     return post_batch(signals)
 
 # ─── LIEN/JUDGMENT ───────────────────────────────────────────────────────────
@@ -1758,22 +1761,22 @@ if __name__ == '__main__':
     except Exception as e:
         log.warning(f'  populate buyer profiles failed: {e}')
 
-    # Step 2: Run matching engine (LEFT JOIN, indexed, fast)
+    # Step 2: Run matching engine — p_limit must match function arg name exactly
     try:
         r_match = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_run_matching_engine",
             headers={**HEADERS, 'Content-Type': 'application/json'},
-            json={'limit': 500}, timeout=60
+            json={'p_limit': 500}, timeout=60
         )
         log.info(f'  matching engine: {r_match.status_code}')
     except Exception as e:
         log.warning(f'  matching engine failed: {e}')
 
-    # Step 3: KPI cache + leads cache (all reads from small tables, <5s total)
+    # Step 3: KPI cache — void return; accept 200/204, log actual code
     try:
         r_kpi = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
-            headers={**HEADERS, 'Content-Type': 'application/json'},
+            headers={**HEADERS, 'Content-Type': 'application/json', 'Accept': 'application/json'},
             json={}, timeout=30
         )
         log.info(f'  KPI cache: {r_kpi.status_code}')
