@@ -36,6 +36,14 @@ HEADERS = {
     'apikey': SUPABASE_KEY,
     'Prefer': 'return=minimal,resolution=ignore-duplicates',
 }
+# RPC calls must NOT carry 'resolution=ignore-duplicates' — that Prefer directive
+# is insert-only and PostgREST returns HTTP 500 on any RPC POST that includes it.
+# Root cause of the matching engine / KPI cache failures since June 27.
+RPC_HEADERS = {
+    'Authorization': f'Bearer {SUPABASE_KEY}',
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_KEY,
+}
 
 SESSION = requests.Session()
 SESSION.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
@@ -1744,10 +1752,13 @@ if __name__ == '__main__':
     log.info('Refreshing pipeline intelligence...')
 
     # Step 1: Populate buyer profiles from recent signals (scoped 365d, fast)
+    # RPC_HEADERS used (not HEADERS) — the ignore-duplicates Prefer directive is
+    # insert-only and causes PostgREST to 500 on any RPC POST. Confirmed root
+    # cause of the matching engine / KPI cache failures since June 27.
     try:
         r_pop = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_populate_buyer_profiles",
-            headers={**HEADERS, 'Content-Type': 'application/json'},
+            headers=RPC_HEADERS,
             json={}, timeout=90
         )
         log.info(f'  populate buyer profiles: {r_pop.status_code}')
@@ -1755,14 +1766,15 @@ if __name__ == '__main__':
         log.warning(f'  populate buyer profiles failed: {e}')
 
     # Step 2: Matching engine via void wrapper (pp_trigger_matching_engine)
-    # Direct integer-return RPC causes PostgREST HTTP 500 — void wrapper resolves this
     try:
         r_match = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_trigger_matching_engine",
-            headers={**HEADERS, 'Content-Type': 'application/json'},
+            headers=RPC_HEADERS,
             json={'p_limit': 500}, timeout=60
         )
         log.info(f'  matching engine: {r_match.status_code}')
+        if r_match.status_code >= 400:
+            log.warning(f'  matching engine body: {r_match.text[:300]}')
     except Exception as e:
         log.warning(f'  matching engine failed: {e}')
 
@@ -1770,10 +1782,12 @@ if __name__ == '__main__':
     try:
         r_kpi = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
-            headers={**HEADERS, 'Content-Type': 'application/json'},
+            headers=RPC_HEADERS,
             json={}, timeout=30
         )
         log.info(f'  KPI cache: {r_kpi.status_code}')
+        if r_kpi.status_code >= 400:
+            log.warning(f'  KPI cache body: {r_kpi.text[:300]}')
     except Exception as e:
         log.warning(f'  KPI cache failed: {e}')
 
