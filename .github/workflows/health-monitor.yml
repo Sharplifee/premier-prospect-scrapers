@@ -2,16 +2,20 @@ name: Pipeline Health Monitor
 
 on:
   schedule:
-    # Runs once at 10 AM Mountain Time (after 4 AM scraper)
-    # Uses both UTC offsets to handle MDT/MST — only ONE should trigger per day
-    # but the check logic below prevents double-execution via Supabase run_log
-    - cron: '0 16 * * *'
-    - cron: '0 17 * * *'
+    # 8:00 AM Mountain Time. Two UTC entries cover MST (UTC-7) and MDT (UTC-6);
+    # only one fires on any given day. The dedupe check below prevents double-execution.
+    - cron: '0 15 * * *'   # 8:00 AM MST
+    - cron: '0 14 * * *'   # 8:00 AM MDT
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write   # required to POST to the workflow dispatches endpoint and re-trigger scraper-cron.yml
 
 jobs:
   health-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check last scraper run and re-trigger if stale
         env:
@@ -23,64 +27,68 @@ jobs:
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
         run: |
-          # Check Supabase pp_run_log for any successful run today (ANY trigger, not just scraper-cron)
-          # This prevents the dual-cron from re-triggering when the pipeline already ran today
+          set -euo pipefail
+
           TODAY=$(date -u +%Y-%m-%d)
-          
-          LAST_RUN=$(curl -s \
+
+          # Has the pipeline already run successfully today (any trigger source)?
+          LAST_RUN=$(curl -sf \
             "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&run_at=gte.${TODAY}T00:00:00Z&order=run_at.desc&limit=1&select=run_at" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            | python3 -c "
-import sys, json
-rows = json.load(sys.stdin)
-print(rows[0]['run_at'] if rows else 'never')
-")
+            | python3 -c "import sys, json; rows = json.load(sys.stdin); print(rows[0]['run_at'] if rows else 'never')")
 
           echo "Last successful pipeline run today: $LAST_RUN"
 
           if [ "$LAST_RUN" != "never" ]; then
-            echo "Pipeline already ran today ($LAST_RUN) — health check PASS, no re-trigger needed"
+            echo "Pipeline already ran today — health check PASS, no action needed."
             exit 0
           fi
 
-          # Nothing ran today — check how long since last run overall
-          LAST_ANY=$(curl -s \
+          # Nothing today yet — how long since the last successful run overall?
+          LAST_ANY=$(curl -sf \
             "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&order=run_at.desc&limit=1&select=run_at" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            | python3 -c "
-import sys, json
-rows = json.load(sys.stdin)
-print(rows[0]['run_at'] if rows else 'never')
-")
+            | python3 -c "import sys, json; rows = json.load(sys.stdin); print(rows[0]['run_at'] if rows else 'never')")
 
           echo "Last successful run overall: $LAST_ANY"
 
           if [ "$LAST_ANY" = "never" ]; then
             HOURS_AGO=999
           else
-            LAST_TS=$(date -d "$LAST_ANY" +%s 2>/dev/null || python3 -c "import datetime; print(int(datetime.datetime.fromisoformat('$LAST_ANY'.replace('Z','+00:00')).timestamp()))")
+            LAST_TS=$(python3 -c "import datetime; print(int(datetime.datetime.fromisoformat('$LAST_ANY'.replace('Z','+00:00')).timestamp()))")
             NOW_TS=$(date +%s)
             HOURS_AGO=$(( (NOW_TS - LAST_TS) / 3600 ))
           fi
 
-          echo "Hours since last run: $HOURS_AGO"
+          echo "Hours since last successful run: $HOURS_AGO"
 
-          if [ "$HOURS_AGO" -gt 28 ]; then
-            echo "Scraper stale ${HOURS_AGO}h — triggering re-run"
-            curl -s -X POST \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/dispatches" \
-              -d '{"ref":"main"}'
-            if [ -n "$TWILIO_SID" ] && [ -n "$ALERT_TO" ]; then
-              curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
-                --user "$TWILIO_SID:$TWILIO_TOKEN" \
-                --data-urlencode "From=$TWILIO_FROM" \
-                --data-urlencode "To=$ALERT_TO" \
-                --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered"
-            fi
-          else
-            echo "No run today yet but last run was ${HOURS_AGO}h ago — within acceptable window, no re-trigger"
+          if [ "$HOURS_AGO" -le 28 ]; then
+            echo "No run today yet, but last run was only ${HOURS_AGO}h ago — within acceptable window. No action needed."
+            exit 0
+          fi
+
+          echo "Scraper pipeline stale (${HOURS_AGO}h) — re-triggering scraper-cron.yml"
+
+          DISPATCH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/scraper-cron.yml/dispatches" \
+            -d '{"ref":"main"}')
+
+          echo "Dispatch response: $DISPATCH_STATUS"
+
+          if [ "$DISPATCH_STATUS" != "204" ]; then
+            echo "::error::Failed to re-trigger scraper-cron.yml (HTTP $DISPATCH_STATUS)"
+            exit 1
+          fi
+
+          if [ -n "${TWILIO_SID:-}" ] && [ -n "${ALERT_TO:-}" ]; then
+            curl -sf -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" \
+              --data-urlencode "From=$TWILIO_FROM" \
+              --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered" \
+              || echo "::warning::Twilio alert failed to send (non-fatal)"
           fi
