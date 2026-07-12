@@ -197,46 +197,52 @@ def post_batch(records):
         if h not in seen:
             seen.add(h)
             unique.append({k: v for k, v in rec.items() if k in ALLOWED_COLS})
-    # CORRECTED FIX: with Prefer: resolution=ignore-duplicates, PostgREST
-    # returns 201/204 for a batch regardless of whether rows were genuinely
-    # inserted or silently skipped as duplicates — it does NOT return 409
-    # in that mode. Checking status code alone (the first attempt at this
-    # fix) could not distinguish real inserts from no-ops. The only reliable
-    # way is to ask Postgres to hand back the rows it actually inserted via
-    # return=representation, and count what actually comes back.
-    REP_HEADERS = dict(HEADERS)
-    REP_HEADERS['Prefer'] = 'return=representation,resolution=ignore-duplicates'
+    # FINAL FIX: two previous attempts (checking status code, then checking
+    # return=representation body) both turned out to depend on PostgREST
+    # response semantics that didn't behave as documented in live testing —
+    # verified directly against the DB, both still reported full batch size
+    # as "inserted" even when zero new rows landed. This approach depends on
+    # nothing except a plain row count before and after, which cannot lie.
+    source_slug = unique[0].get('source_slug', '') if unique else ''
+    try:
+        before_r = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=id&source_slug=eq.{source_slug}&limit=1",
+            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
+        )
+        before_count = int(before_r.headers.get('content-range', '0/0').split('/')[-1])
+    except Exception:
+        before_count = None
 
-    inserted = 0
-    duplicates = 0
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
         for attempt in range(3):
             try:
-                r = SESSION.post(TABLE_URL, json=chunk, headers=REP_HEADERS, timeout=45)
-                if r.status_code in (200, 201):
-                    try:
-                        actually_inserted = len(r.json())
-                    except Exception:
-                        actually_inserted = 0
-                    inserted += actually_inserted
-                    duplicates += (len(chunk) - actually_inserted)
-                    break
-                if r.status_code == 204:
-                    # Shouldn't normally happen with return=representation, but
-                    # treat as zero known-inserted rather than assuming success.
-                    duplicates += len(chunk)
-                    break
-                if r.status_code == 409:
-                    duplicates += len(chunk)
+                r = SESSION.post(TABLE_URL, json=chunk, headers=HEADERS, timeout=45)
+                if r.status_code in (200, 201, 204, 409):
                     break
                 log.error(f"Batch insert {r.status_code}: {r.text[:100]}")
                 time.sleep(5)
             except Exception as e:
                 log.error(f"Batch insert error: {e}")
                 if attempt < 2: time.sleep(5)
-    if duplicates:
-        log.info(f"post_batch: {inserted} new, {duplicates} duplicates skipped")
+
+    if before_count is not None:
+        try:
+            after_r = SESSION.get(
+                f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+                f"?select=id&source_slug=eq.{source_slug}&limit=1",
+                headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
+            )
+            after_count = int(after_r.headers.get('content-range', '0/0').split('/')[-1])
+            inserted = max(0, after_count - before_count)
+        except Exception:
+            inserted = 0
+    else:
+        inserted = 0
+
+    if inserted == 0 and len(unique) > 0:
+        log.info(f"post_batch [{source_slug}]: 0 new rows out of {len(unique)} attempted (all duplicates)")
     return inserted
 
 TWILIO_SID   = os.environ.get('TWILIO_SID', '')
