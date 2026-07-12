@@ -160,19 +160,29 @@ def post_batch(records):
             seen.add(h)
             unique.append({k: v for k, v in rec.items() if k in ALLOWED_COLS})
     inserted = 0
+    duplicates = 0
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
         for attempt in range(3):
             try:
                 r = SESSION.post(TABLE_URL, json=chunk, headers=HEADERS, timeout=45)
-                if r.status_code in (200, 201, 204, 409):
+                if r.status_code in (200, 201, 204):
                     inserted += len(chunk)
+                    break
+                if r.status_code == 409:
+                    # Duplicate — correctly rejected, NOT a successful insert.
+                    # Previously counted identically to 200/201/204, which made
+                    # every run look like it added ~23,760 new signals even on
+                    # days that added zero. That masked real ingestion stalls.
+                    duplicates += len(chunk)
                     break
                 log.error(f"Batch insert {r.status_code}: {r.text[:100]}")
                 time.sleep(5)
             except Exception as e:
                 log.error(f"Batch insert error: {e}")
                 if attempt < 2: time.sleep(5)
+    if duplicates:
+        log.info(f"post_batch: {inserted} new, {duplicates} duplicates skipped")
     return inserted
 
 TWILIO_SID   = os.environ.get('TWILIO_SID', '')
