@@ -66,19 +66,42 @@ def post_batch(records):
         if h not in seen:
             seen.add(h)
             unique.append({k:v for k,v in rec.items() if k in allowed})
-    inserted = 0
+    source_slug = unique[0].get('source_slug', '') if unique else ''
+    try:
+        before_r = SESSION.get(
+            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+            f"?select=id&source_slug=eq.{source_slug}&limit=1",
+            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
+        )
+        before_count = int(before_r.headers.get('content-range', '0/0').split('/')[-1])
+    except Exception:
+        before_count = None
+
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
         for attempt in range(3):
             try:
                 r = SESSION.post(TABLE_URL, json=chunk, headers=HEADERS, timeout=45)
                 if r.status_code in (200, 201, 204, 409):
-                    inserted += len(chunk)
                     break
                 time.sleep(5)
             except Exception as e:
                 log.error(f"Batch insert: {e}")
                 if attempt < 2: time.sleep(5)
+
+    if before_count is not None:
+        try:
+            after_r = SESSION.get(
+                f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+                f"?select=id&source_slug=eq.{source_slug}&limit=1",
+                headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
+            )
+            after_count = int(after_r.headers.get('content-range', '0/0').split('/')[-1])
+            inserted = max(0, after_count - before_count)
+        except Exception:
+            inserted = 0
+    else:
+        inserted = 0
     return inserted
 
 def safe_get(url, timeout=20, retries=3, **kwargs):
