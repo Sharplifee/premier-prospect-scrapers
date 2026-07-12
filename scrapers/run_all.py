@@ -197,21 +197,37 @@ def post_batch(records):
         if h not in seen:
             seen.add(h)
             unique.append({k: v for k, v in rec.items() if k in ALLOWED_COLS})
+    # CORRECTED FIX: with Prefer: resolution=ignore-duplicates, PostgREST
+    # returns 201/204 for a batch regardless of whether rows were genuinely
+    # inserted or silently skipped as duplicates — it does NOT return 409
+    # in that mode. Checking status code alone (the first attempt at this
+    # fix) could not distinguish real inserts from no-ops. The only reliable
+    # way is to ask Postgres to hand back the rows it actually inserted via
+    # return=representation, and count what actually comes back.
+    REP_HEADERS = dict(HEADERS)
+    REP_HEADERS['Prefer'] = 'return=representation,resolution=ignore-duplicates'
+
     inserted = 0
     duplicates = 0
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
         for attempt in range(3):
             try:
-                r = SESSION.post(TABLE_URL, json=chunk, headers=HEADERS, timeout=45)
-                if r.status_code in (200, 201, 204):
-                    inserted += len(chunk)
+                r = SESSION.post(TABLE_URL, json=chunk, headers=REP_HEADERS, timeout=45)
+                if r.status_code in (200, 201):
+                    try:
+                        actually_inserted = len(r.json())
+                    except Exception:
+                        actually_inserted = 0
+                    inserted += actually_inserted
+                    duplicates += (len(chunk) - actually_inserted)
+                    break
+                if r.status_code == 204:
+                    # Shouldn't normally happen with return=representation, but
+                    # treat as zero known-inserted rather than assuming success.
+                    duplicates += len(chunk)
                     break
                 if r.status_code == 409:
-                    # Duplicate — correctly rejected, NOT a successful insert.
-                    # Previously counted identically to 200/201/204, which made
-                    # every run look like it added ~23,760 new signals even on
-                    # days that added zero. That masked real ingestion stalls.
                     duplicates += len(chunk)
                     break
                 log.error(f"Batch insert {r.status_code}: {r.text[:100]}")
