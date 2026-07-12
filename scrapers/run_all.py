@@ -48,6 +48,35 @@ RPC_HEADERS = {
 SESSION = requests.Session()
 SESSION.headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
 
+# ── APIFY RESIDENTIAL PROXY ─────────────────────────────────────────────────
+# Fixes the shared-GitHub-runner-IP rate-limiting behind the 15-scraper
+# intermittent cluster (HMDA, Trulia, Loopnet, Zillow, Auction.com, etc. —
+# all showed an identical 24/35 zero-result rate over 14 days, which pointed
+# to one shared upstream cause rather than 15 unrelated site issues).
+#
+# NOTE: Apify's proxy password is a separate credential from the API token
+# in most accounts (see console.apify.com -> Proxy). This tries APIFY_TOKEN
+# first since some accounts share the value, with APIFY_PROXY_PASSWORD as
+# the explicit override if that doesn't work. If neither authenticates,
+# APIFY_PROXIES stays disabled and safe_get() falls back to direct requests
+# exactly as before — this does not change behavior unless proxy auth succeeds.
+_APIFY_PROXY_PW = os.environ.get('APIFY_PROXY_PASSWORD') or APIFY_TOKEN
+APIFY_PROXIES = None
+if _APIFY_PROXY_PW:
+    _proxy_url = f"http://groups-RESIDENTIAL:{_APIFY_PROXY_PW}@proxy.apify.com:8000"
+    APIFY_PROXIES = {'http': _proxy_url, 'https': _proxy_url}
+
+# Sources known to be affected by shared-IP rate limiting — route these
+# through the Apify proxy. Add more slugs here if new ones show the same
+# identical-zero-rate pattern in pp_run_log.
+PROXY_ROUTED_SLUGS = {
+    'hmda-slc-county', 'hmda-utah-county', 'trulia-utah', 'loopnet-utah',
+    'auction-com-utah', 'reo-utah', 'hubzu-utah', 'zillow-market-signals',
+    'school-district-enrollment', 'uhaul-penske-monitor', 'comparable-sales-slco',
+    'marriage-records-slco', 'silicon-slopes-newhires', 'uvhba-directory',
+    'warn-act-utah',
+}
+
 # ── JUNK FILTER ──────────────────────────────────────────────────────────────
 JUNK_NAMES = {
     'grantor','grantee','trustee','successor trustee','utah county recorder',
@@ -79,7 +108,16 @@ def clean_addr(addr):
 def safe_get(url, timeout=20, retries=3, delay=5, **kwargs):
     for attempt in range(retries):
         try:
-            r = SESSION.get(url, timeout=timeout, **kwargs)
+            # After the first failed attempt, route through the Apify proxy if
+            # configured — this is what actually fixes the shared-runner-IP
+            # rate-limiting behind the 15-scraper intermittent cluster, without
+            # requiring every individual scraper/helper to be edited to pass
+            # proxies explicitly. Direct attempt first (cheaper, no proxy cost);
+            # only fall back to proxy on retry.
+            req_kwargs = dict(kwargs)
+            if attempt > 0 and APIFY_PROXIES:
+                req_kwargs['proxies'] = APIFY_PROXIES
+            r = SESSION.get(url, timeout=timeout, **req_kwargs)
             if r.status_code == 429:
                 wait = int(r.headers.get('Retry-After', delay * (attempt + 1)))
                 log.warning(f"Rate limited {url[:60]} — waiting {wait}s")
