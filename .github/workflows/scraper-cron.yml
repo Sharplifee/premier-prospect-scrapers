@@ -56,6 +56,21 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pdfplumber httpx
 
+      - name: DIAG - key role and live insert test
+        run: |
+          python3 -c "
+          import os, base64, json, requests
+          key = os.environ['SUPABASE_SERVICE_KEY']
+          payload = key.split('.')[1]
+          role = json.loads(base64.urlsafe_b64decode(payload + '===')).get('role')
+          print('KEYROLE=' + str(role))
+          url = os.environ['SUPABASE_URL'] + '/rest/v1/pp_scraper_signals'
+          h = {'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'Prefer': 'return=minimal,resolution=ignore-duplicates'}
+          r = requests.post(url, json=[{'source_slug':'__diag_ci__','signal_type':'diag','score':1,'county':'Utah','raw_owner_name':'DIAG CI','raw_address':'DIAG CI ADDR','dedupe_hash':'diag_ci_hash_0001'}], headers=h, timeout=30)
+          print('INSERT_STATUS=' + str(r.status_code))
+          print('INSERT_BODY=' + r.text[:200])
+          "
+
       - name: Run scrapers
         id: scrapers
         run: python scrapers/run_all.py
