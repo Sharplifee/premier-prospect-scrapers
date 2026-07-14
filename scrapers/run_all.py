@@ -1439,14 +1439,22 @@ def scrape_loopnet_utah():
     }
 
     signals = []
-    for county_name in ['Salt Lake','Utah','Davis','Weber']:
-        try:
-            r = SESSION.post(
-                'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-                data={'DocDesc': '', 'DateRange': '7', 'County': county_name},
-                timeout=25
-            )
-            if not r or r.status_code != 200: continue
+    seen_entries = set()
+    # NOTE: The site's County POST parameter does not actually filter results —
+    # confirmed directly: querying with County=Salt Lake, County=Utah, County=Davis,
+    # and County=Weber all return the identical dataset from Utah County's own
+    # LandRecords system. This isn't Loopnet.com at all (blocked, see docstring);
+    # it's Utah County's recorder search, which has no cross-county data to filter.
+    # Previously this looped 4x, made 4x the requests, and mislabeled every real
+    # result with whichever county name happened to be looping — a real data
+    # quality bug that mattered for downstream county-based routing/scoring.
+    try:
+        r = SESSION.post(
+            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+            data={'DocDesc': '', 'DateRange': '7', 'County': 'Utah'},
+            timeout=25
+        )
+        if r and r.status_code == 200:
             soup = BeautifulSoup(r.text, 'html.parser')
             header_passed = False
             for row in soup.select('table tr'):
@@ -1462,16 +1470,18 @@ def scrape_loopnet_utah():
                 grantor  = cells[4] if len(cells) > 4 else ''
                 if koi not in CONSTRUCTION_KOI: continue
                 if not rec_date: continue
+                if entry in seen_entries: continue  # same entry can span multiple sections
+                seen_entries.add(entry)
                 signal_type, score = CONSTRUCTION_KOI[koi]
                 signals.append({
                     'source_slug': slug, 'signal_type': signal_type,
-                    'score': score, 'county': county_name, 'city': None,
+                    'score': score, 'county': 'Utah', 'city': None,
                     'raw_owner_name': grantor[:100] if grantor else None,
                     'raw_address': f'Entry #{entry}' if entry else grantor[:80],
                     'raw_payload': json.dumps({'koi': koi, 'rec_date': rec_date, 'entry': entry}),
                 })
-        except Exception as e:
-            log.warning(f'[{slug}] {county_name}: {e}')
+    except Exception as e:
+        log.warning(f'[{slug}] {e}')
     return post_batch(signals)
 
 def scrape_forsalebyowner_utah():
