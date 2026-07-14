@@ -56,40 +56,6 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pdfplumber httpx
 
-      - name: DIAG - full post_batch flow reproduction
-        run: |
-          python3 -c "
-          import os, requests, hashlib, time
-          KEY = os.environ['SUPABASE_SERVICE_KEY']
-          URL = os.environ['SUPABASE_URL']
-          TABLE = URL + '/rest/v1/pp_scraper_signals'
-          H = {'Authorization':'Bearer '+KEY,'Content-Type':'application/json','apikey':KEY,'Prefer':'return=minimal,resolution=ignore-duplicates'}
-          S = requests.Session(); S.headers['User-Agent']='Mozilla/5.0'
-          slug='__diag_flow__'
-          ts=str(int(time.time()))
-          rows=[{'source_slug':slug,'signal_type':'diag','score':1,'county':'Utah','raw_owner_name':'DIAG '+ts+' '+str(n),'raw_address':'ADDR '+ts+' '+str(n),'dedupe_hash':hashlib.md5((ts+str(n)).encode()).hexdigest()} for n in range(3)]
-          # before count
-          br = S.get(TABLE+'?select=id&source_slug=eq.'+slug+'&limit=1', headers={**H,'Prefer':'count=exact'}, timeout=15)
-          print('BEFORE_STATUS=',br.status_code,'CONTENT_RANGE=',repr(br.headers.get('content-range')))
-          before=int(br.headers.get('content-range','0/0').split('/')[-1])
-          print('BEFORE_COUNT=',before)
-          # insert
-          ir = S.post(TABLE, json=rows, headers=H, timeout=45)
-          print('INSERT_STATUS=',ir.status_code,'BODY=',repr(ir.text[:150]))
-          # after count
-          ar = S.get(TABLE+'?select=id&source_slug=eq.'+slug+'&limit=1', headers={**H,'Prefer':'count=exact'}, timeout=15)
-          print('AFTER_STATUS=',ar.status_code,'CONTENT_RANGE=',repr(ar.headers.get('content-range')))
-          after=int(ar.headers.get('content-range','0/0').split('/')[-1])
-          print('AFTER_COUNT=',after)
-          print('COMPUTED_INSERTED=',max(0,after-before))
-          # authoritative check
-          chk=S.get(TABLE+'?select=dedupe_hash&source_slug=eq.'+slug, headers={**H,'Prefer':'count=exact'}, timeout=15)
-          print('ROWS_ACTUALLY_PRESENT=',len(chk.json()))
-          # cleanup
-          S.delete(TABLE+'?source_slug=eq.'+slug, headers=H, timeout=15)
-          print('CLEANED_UP')
-          "
-
       - name: Run scrapers
         id: scrapers
         run: python scrapers/run_all.py
