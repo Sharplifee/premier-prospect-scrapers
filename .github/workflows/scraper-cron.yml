@@ -2,6 +2,11 @@ name: Premier Prospect Scrapers
 
 on:
   workflow_dispatch:
+    inputs:
+      force_rerun:
+        description: 'Bypass already-ran-today guards (verification testing)'
+        required: false
+        default: 'false'
   schedule:
     # 4:00 AM Mountain Time daily
     # MDT (Mar-Nov): 10:00 UTC | MST (Nov-Mar): 11:00 UTC
@@ -23,6 +28,7 @@ jobs:
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
       APIFY_PROXY_PASSWORD: ${{ secrets.APIFY_PROXY_PASSWORD }}
+      FORCE_RERUN: ${{ github.event.inputs.force_rerun || 'false' }}
       ACCELA_CLIENT_ID: ${{ secrets.ACCELA_CLIENT_ID }}
       ACCELA_CLIENT_SECRET: ${{ secrets.ACCELA_CLIENT_SECRET }}
       MLS_BEARER_TOKEN: ${{ secrets.MLS_BEARER_TOKEN }}
