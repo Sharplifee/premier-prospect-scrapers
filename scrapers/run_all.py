@@ -115,7 +115,12 @@ def safe_get(url, timeout=20, retries=3, delay=5, **kwargs):
             # proxies explicitly. Direct attempt first (cheaper, no proxy cost);
             # only fall back to proxy on retry.
             req_kwargs = dict(kwargs)
-            if attempt > 0 and APIFY_PROXIES:
+            # .gov sites (e.g. utahcounty.gov) actively block proxy/VPN IP ranges —
+            # confirmed directly: utahcounty.gov returns 200 OK in ~5s on a direct
+            # connection but times out completely (30s, twice) through the Apify
+            # residential proxy. Routing .gov traffic through the proxy makes
+            # things strictly worse, so it's excluded here regardless of attempt.
+            if attempt > 0 and APIFY_PROXIES and '.gov' not in url:
                 req_kwargs['proxies'] = APIFY_PROXIES
             r = SESSION.get(url, timeout=timeout, **req_kwargs)
             if r.status_code == 429:
@@ -637,7 +642,11 @@ def scrape_weber_lir_parcels(): return scrape_lir('weber-lir-parcels','Weber','h
 
 # ─── HMDA (runs only if new data available or not yet run today) ─────────────
 def _hmda_already_run_today(slug):
-    """Skip if already collected today — static 2023 data never changes mid-day."""
+    """Skip if already collected today — static 2023 data never changes mid-day.
+    Bypassed entirely when FORCE_RERUN=true, for verification testing where every
+    scraper needs to actually execute regardless of an earlier run today."""
+    if os.environ.get('FORCE_RERUN', '').lower() == 'true':
+        return False
     try:
         r = SESSION.get(
             f"{SUPABASE_URL}/rest/v1/pp_run_log?source_slug=eq.{slug}&status=eq.success"
