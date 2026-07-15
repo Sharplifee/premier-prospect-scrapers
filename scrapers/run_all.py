@@ -1868,17 +1868,31 @@ if __name__ == '__main__':
         log.warning(f'  matching engine failed: {e}')
 
     # Step 3: KPI cache — void return
-    try:
-        r_kpi = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
-            headers=RPC_HEADERS,
-            json={}, timeout=30
-        )
-        log.info(f'  KPI cache: {r_kpi.status_code}')
-        if r_kpi.status_code >= 400:
+    # Retried on failure: right after 43 scrapers finish their batch inserts,
+    # the DB can be under transient load and this call can 500 with a 57014
+    # statement timeout even though the function itself completes in <3s once
+    # load settles (confirmed July 15 2026 — a single un-retried failure here
+    # left the dashboard cache stale for ~22h until manually caught). No single
+    # point of failure: retry up to 3x with a short backoff before giving up.
+    kpi_ok = False
+    for attempt in range(1, 4):
+        try:
+            r_kpi = requests.post(
+                f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
+                headers=RPC_HEADERS,
+                json={}, timeout=30
+            )
+            log.info(f'  KPI cache (attempt {attempt}): {r_kpi.status_code}')
+            if r_kpi.status_code < 400:
+                kpi_ok = True
+                break
             log.warning(f'  KPI cache body: {r_kpi.text[:300]}')
-    except Exception as e:
-        log.warning(f'  KPI cache failed: {e}')
+        except Exception as e:
+            log.warning(f'  KPI cache attempt {attempt} failed: {e}')
+        if attempt < 3:
+            time.sleep(10)
+    if not kpi_ok:
+        log.error('  KPI cache refresh FAILED after 3 attempts — dashboards may show stale data')
 
     log.info('Pipeline intelligence refresh complete.')
 
