@@ -873,7 +873,7 @@ def scrape_competitor_buyer_forms():
             log.warning(f'[{slug}] {name}: {e}')
     # Write to pp_market_data, NOT pp_scraper_signals
     if not signals: return 0
-    mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data"
+    mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data?on_conflict=source_slug,raw_address"  # requires pp_market_data_source_addr_unique constraint
     count = 0
     for i in range(0, len(signals), 50):
         chunk = signals[i:i+50]
@@ -1122,7 +1122,7 @@ def scrape_realtor_market_utah():
     if not batch: return 0
     # Write to pp_market_data, not pp_signals
     mkt_headers = {**HEADERS}
-    mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data"
+    mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data?on_conflict=source_slug,raw_address"  # requires pp_market_data_source_addr_unique constraint
     count = 0
     for i in range(0, len(batch), 200):
         chunk = batch[i:i+200]
@@ -1548,7 +1548,7 @@ def scrape_zillow_home_values():
         except: desc = f"{region} | {recent}"
         batch.append({'source_slug': slug, 'signal_type': 'home_value_signal', 'raw_address': desc[:200], 'captured_at': datetime.datetime.utcnow().isoformat()})
     if batch:
-        mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data"
+        mkt_url = f"{SUPABASE_URL}/rest/v1/pp_market_data?on_conflict=source_slug,raw_address"  # requires pp_market_data_source_addr_unique constraint
         r2 = SESSION.post(mkt_url, json=batch, headers=HEADERS, timeout=20)
         if r2.status_code in (200,201,204): count = len(batch)
     return count
