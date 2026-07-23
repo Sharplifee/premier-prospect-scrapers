@@ -32,8 +32,22 @@ def _search_perform(sess, cookie, checksum, page=1, per_page=25):
     start = (page - 1) * per_page
     url = f'{_URE_BASE}/search/perform/format/json/type/1/count/{per_page}/start/{start}/checksum/{checksum}'
     try:
-        r = sess.get(url, headers=_ure_headers(cookie, _URE_BASE + '/search/form/type/1/'), timeout=20)
-        return r.content if r.status_code == 200 else b''
+        # allow_redirects=False is load-bearing: an EXPIRED URE session does NOT
+        # return 401/403 — it 302-redirects to '/'. With redirects followed, the
+        # scraper landed on the homepage, saw HTTP 200, parsed marketing HTML as
+        # search results, and reported "0 listings" with no error. That is why all
+        # four MLS scrapers looked merely empty instead of broken.
+        r = sess.get(url, headers=_ure_headers(cookie, _URE_BASE + '/search/form/type/1/'),
+                     timeout=20, allow_redirects=False)
+        if r.status_code in (301, 302, 303, 307, 308):
+            log.error(f'[{SOURCE_SLUG}] URE SESSION EXPIRED — auth redirect to '
+                      f'{r.headers.get("location", "/")!r}. URE_SESSION_COOKIE must be refreshed; '
+                      f'until then this scraper cannot return listings.')
+            return b''
+        if r.status_code != 200:
+            log.error(f'[{SOURCE_SLUG}] URE search failed HTTP {r.status_code}')
+            return b''
+        return r.content
     except Exception as e:
         log.warning(f'_search_perform p{page}: {e}')
         return b''
