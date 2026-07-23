@@ -90,9 +90,19 @@ def _parse_listing(html, listno):
 
 def run() -> int:
     log.info(f'[{SOURCE_SLUG}] starting')
-    cookie = os.environ.get('URE_SESSION_COOKIE', '')
+    # Auto-refreshing session: uses URE_SESSION_COOKIE if it is still live,
+    # otherwise logs in with URE_USERNAME / URE_PASSWORD and mints a fresh one.
+    # One login is shared across all four MLS scrapers per run.
+    try:
+        from ure_auth import get_cookie
+    except ImportError:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
+        from ure_auth import get_cookie
+    cookie = get_cookie()
     if not cookie:
-        log.warning(f'[{SOURCE_SLUG}] no URE_SESSION_COOKIE — skipping')
+        log.error(f'[{SOURCE_SLUG}] no usable URE session — '
+                  f'URE_SESSION_COOKIE expired and auto-login did not succeed; skipping')
         return 0
 
     sess = requests.Session()
