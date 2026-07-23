@@ -77,7 +77,11 @@ def cookie_is_live(cookie):
             timeout=20,
             allow_redirects=False,
         )
-        return r.status_code == 200
+        # Unauthenticated sessions are bounced with a 3xx to '/'. Any non-redirect
+        # response means we cleared authentication — including a 500, which this
+        # probe's deliberately-invalid checksum=0 provokes on a *valid* session.
+        # Testing for ==200 here would reject a perfectly good login.
+        return r.status_code not in (301, 302, 303, 307, 308)
     except Exception as e:
         log.warning(f'[ure_auth] cookie liveness check failed: {e}')
         return False
@@ -100,17 +104,40 @@ def login() -> str:
     url = _URE_BASE + _LOGIN_PATH
 
     try:
-        # Priming GET establishes PHPSESSID before the credential POST.
+        # URE's login form is onsubmit="return false;" — it never submits natively.
+        # Authenticate.initLoginForm() performs a three-step handshake, and posting
+        # login/pass straight at the page URL simply re-renders the login page
+        # (HTTP 200, no session), which is what made this look like bad credentials.
+        #
+        #   1. GET  the login page                -> establishes PHPSESSID
+        #   2. POST /auth/login.form/             -> returns a per-session key
+        #   3. POST /auth/authenticate/           -> fields renamed login_<key>/pass_<key>
         s.get(url, timeout=20)
+
+        kr = s.post(_URE_BASE + '/auth/login.form/',
+                    headers={'X-Requested-With': 'XMLHttpRequest', 'Referer': url},
+                    timeout=20)
+        key = kr.text.strip().strip('"')
+        if kr.status_code != 200 or not key:
+            log.error(f'[ure_auth] could not obtain login form key (HTTP {kr.status_code})')
+            return ''
+
         r = s.post(
-            url,
-            data={'login': user, 'pass': pw},
-            headers={'Referer': url, 'Content-Type': 'application/x-www-form-urlencoded'},
+            _URE_BASE + '/auth/authenticate/',
+            data={f'login_{key}': user, f'pass_{key}': pw},
+            headers={'X-Requested-With': 'XMLHttpRequest', 'Referer': url},
             timeout=25,
-            allow_redirects=True,
         )
         if r.status_code >= 400:
-            log.error(f'[ure_auth] login POST returned HTTP {r.status_code}')
+            log.error(f'[ure_auth] authenticate returned HTTP {r.status_code}')
+            return ''
+        # Endpoint reports failure in-band with HTTP 200, e.g. {"error":"Invalid login"}
+        try:
+            err = (r.json() or {}).get('error', 'none')
+        except Exception:
+            err = 'none'
+        if str(err).lower() not in ('none', '', 'false'):
+            log.error(f'[ure_auth] authentication rejected: {err}')
             return ''
 
         cookie = _cookie_header(s)
