@@ -833,20 +833,25 @@ def scrape_competitor_buyer_forms():
     PAGES = [
         ('https://www.presidioteam.com/buyers', 'Presidio Real Estate', 'Utah'),
         ('https://www.kwutah.com/buyers', 'KW Utah', 'Utah'),
-        ('https://www.realtypath.com/buyers', 'Realty Path', 'Salt Lake'),
-        ('https://www.utahrealestate.com/info/market-stats', 'Utah RE Market Stats', 'Utah'),
+        ('https://www.realtypath.com/', 'Realty Path', 'Salt Lake'),
+        ('https://www.utahrealestate.com/statistics', 'Utah RE Market Stats', 'Utah'),
         ('https://www.compass.com/agents/utah/', 'Compass Utah', 'Salt Lake'),
     ]
     signals = []
     # Get prior hashes
+    # Read prior hashes from pp_market_data (where this scraper actually writes).
+    # Was reading pp_scraper_signals.raw_owner_name — wrong table AND wrong field,
+    # so a prior hash was never found and `changed` was permanently False.
     try:
         r = SESSION.get(
-            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-            f"?select=raw_address,raw_owner_name&source_slug=eq.{slug}&order=captured_at.desc&limit=20",
+            f"{SUPABASE_URL}/rest/v1/pp_market_data"
+            f"?select=raw_address,raw_payload&source_slug=eq.{slug}&order=captured_at.desc&limit=20",
             headers=HEADERS, timeout=8
         )
-        prior = {rec['raw_address']: rec.get('raw_owner_name','') for rec in (r.json() if isinstance(r.json(),list) else [])}
-    except: prior = {}
+        prior = {rec['raw_address']: rec.get('raw_payload') or {}
+                 for rec in (r.json() if isinstance(r.json(), list) else [])}
+    except Exception:
+        prior = {}
 
     # FIX June 17: Routes to pp_market_data NOT pp_scraper_signals.
     # competitor_form_change is website monitoring, not a buyer lead.
@@ -858,15 +863,21 @@ def scrape_competitor_buyer_forms():
             soup = BeautifulSoup(r2.text, 'html.parser')
             page_content = ' '.join([el.get_text(strip=True) for el in soup.select('form,button,h1,h2,h3,.cta')])[:1000]
             current_hash = hashlib.md5(page_content.encode()).hexdigest()
-            prior_payload = prior.get(url, '{}')
-            try: prior_hash = json.loads(prior_payload).get('hash', '')
-            except: prior_hash = ''
+            prior_payload = prior.get(url) or {}
+            if isinstance(prior_payload, str):
+                try: prior_payload = json.loads(prior_payload)
+                except Exception: prior_payload = {}
+            prior_hash = prior_payload.get('hash', '') if isinstance(prior_payload, dict) else ''
             changed = bool(prior_hash and current_hash != prior_hash)
+            # pp_market_data has NO score/county/city columns — including them returned
+            # 400 PGRST204 on every insert since the June 17 reroute, silently swallowed
+            # because only 200/201/204 were counted. County/score kept inside raw_payload.
             signals.append({
                 'source_slug': slug, 'signal_type': 'market_intelligence',
-                'score': 45, 'county': county, 'city': None,
+                'metro': county,
                 'raw_address': url,
-                'raw_payload': json.dumps({'name': name, 'hash': current_hash, 'changed': changed}),
+                'raw_payload': json.dumps({'name': name, 'hash': current_hash,
+                                           'changed': changed, 'county': county, 'score': 45}),
                 'captured_at': datetime.datetime.utcnow().isoformat(),
             })
         except Exception as e:
@@ -878,7 +889,12 @@ def scrape_competitor_buyer_forms():
     for i in range(0, len(signals), 50):
         chunk = signals[i:i+50]
         r3 = SESSION.post(mkt_url, json=chunk, headers=HEADERS, timeout=20)
-        if r3.status_code in (200, 201, 204): count += len(chunk)
+        if r3.status_code in (200, 201, 204):
+            count += len(chunk)
+        else:
+            # Never swallow a write failure again — this is exactly how the
+            # PGRST204 column error hid for five weeks looking like "0 records".
+            log.error(f'[{slug}] market_data write failed {r3.status_code}: {r3.text[:200]}')
     log.info(f'[{slug}] {count} records -> pp_market_data (market intelligence)')
     return count
 
@@ -1274,8 +1290,28 @@ def scrape_uhaul_penske_monitor():
                 url = f"https://www.uhaul.com/Trucks/?from={orig_zip}&to={dest_zip}"
                 r = safe_get(url, timeout=15)
                 if not r: continue
+                # uhaul.com now DROPS the from/to query params and 302s to the generic
+                # /Truck-Rentals/ landing page, so the old regex was scraping the
+                # advertised "$19.95 in-town" teaser rate — not a real one-way quote
+                # for this route. That produced meaningless price=0/price=19 rows.
+                # A genuine one-way quote requires their session-based quote flow,
+                # which a plain GET cannot reach. Rather than write a fabricated or
+                # hollow figure, skip: no real price means no signal.
+                final_url = str(getattr(r, 'url', '') or '')
+                if 'from=' not in final_url or 'to=' not in final_url:
+                    log.warning(f'[{slug}] {orig_city}→{dest_city}: route params dropped '
+                                f'(redirected to {final_url[:60]}) — no real quote available, skipping')
+                    continue
                 price_match = re.search(r'\$[\d,]+', r.text)
-                price = int(price_match.group().replace('$','').replace(',','')) if price_match else 0
+                if not price_match:
+                    log.warning(f'[{slug}] {orig_city}→{dest_city}: no price found — skipping')
+                    continue
+                price = int(price_match.group().replace('$','').replace(',',''))
+                # An in-town teaser rate is never a valid long-haul one-way quote.
+                if price < 100:
+                    log.warning(f'[{slug}] {orig_city}→{dest_city}: implausible quote ${price} '
+                                f'(teaser rate, not a route quote) — skipping')
+                    continue
                 signals.append({
                     'source_slug': slug, 'signal_type': 'inbound_migration_signal',
                     'score': 65 if price > 1500 else 45,
