@@ -1915,7 +1915,25 @@ if __name__ == '__main__':
     except Exception as e:
         log.warning(f'  populate buyer profiles failed: {e}')
 
-    # Step 2: Matching engine via void wrapper (pp_trigger_matching_engine)
+    # Step 2: Convergence / conviction scoring.
+    # Aggregates every live signal per resolved owner entity into one conviction
+    # score (anchor + signal-type diversity, recency-decayed, plus clustering,
+    # tax-escalation, absentee, contactability, and kill signals).
+    # ORDER IS LOAD-BEARING: the matching engine reads pp_entity_conviction, so
+    # this must run BEFORE matching or matching scores against stale conviction.
+    try:
+        r_conv = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_compute_convergence",
+            headers=RPC_HEADERS, json={}, timeout=180
+        )
+        log.info(f'  Convergence: {r_conv.status_code} entities_scored={r_conv.text[:40]}')
+        if r_conv.status_code >= 400:
+            log.error(f'  Convergence FAILED: {r_conv.text[:300]}')
+    except Exception as e:
+        log.error(f'  Convergence failed: {e}')
+
+    # Step 3: Matching engine via void wrapper (pp_trigger_matching_engine).
+    # Consumes the conviction scores written in Step 2.
     try:
         r_match = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_trigger_matching_engine",
@@ -1928,24 +1946,7 @@ if __name__ == '__main__':
     except Exception as e:
         log.warning(f'  matching engine failed: {e}')
 
-    # Step 2.5: Convergence / conviction scoring.
-    # Aggregates every live signal per resolved owner entity and computes a single
-    # conviction score (anchor + signal-type diversity, recency-decayed, plus
-    # clustering and tax-escalation factors). This is what ranks leads by how
-    # likely the owner is to sell, rather than by signal category alone.
-    # Must run AFTER buyer profiles and BEFORE matching, so matching can use it.
-    try:
-        r_conv = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/pp_compute_convergence",
-            headers=RPC_HEADERS, json={}, timeout=180
-        )
-        log.info(f'  Convergence: {r_conv.status_code} entities_scored={r_conv.text[:40]}')
-        if r_conv.status_code >= 400:
-            log.error(f'  Convergence FAILED: {r_conv.text[:300]}')
-    except Exception as e:
-        log.error(f'  Convergence failed: {e}')
-
-    # Step 3: KPI cache — void return
+    # Step 4: KPI cache — void return
     # Retried on failure: right after 43 scrapers finish their batch inserts,
     # the DB can be under transient load and this call can 500 with a 57014
     # statement timeout even though the function itself completes in <3s once
