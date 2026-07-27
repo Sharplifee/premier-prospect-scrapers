@@ -611,8 +611,15 @@ def scrape_fire_marshal_lp_hvac():     return scrape_fire_marshal('fire-marshal-
 # ─── LIR PARCELS ─────────────────────────────────────────────────────────────
 def scrape_lir(slug, county, svc):
     log.info(f'[{slug}] starting')
+    # PRIMARY_RES (owner-occupied flag) and TOTAL_MKT_VALUE are the two fields that
+    # make absentee-owner and equity scoring possible. They were being requested but
+    # thrown away — only signal_type/source_family were persisted, so the three
+    # largest counties (Salt Lake, Davis, Weber) had no usable parcel attributes.
     r = safe_get(f"{svc}/query", params={
-        'where':'1=1','outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,TOTAL_MKT_VALUE',
+        'where':'1=1',
+        'outFields':('PARCEL_ID,SERIAL_NUM,PARCEL_ADD,PARCEL_CITY,PARCEL_ZIP,'
+                     'TOTAL_MKT_VALUE,LAND_MKT_VALUE,PARCEL_ACRES,PROP_CLASS,'
+                     'PRIMARY_RES,BLDG_SQFT,BUILT_YR,OWN_NAME1,OWN_NAME2'),
         'resultRecordCount':200,'orderByFields':'OBJECTID DESC','f':'json'
     }, timeout=25)
     if not r: return 0
@@ -623,16 +630,34 @@ def scrape_lir(slug, county, svc):
         a = f.get('attributes',{})
         addr = a.get('PARCEL_ADD','')
         city = a.get('PARCEL_CITY','')
-        # OWN_NAME1/OWN_NAME2 only exist on Utah/Wasatch/Summit LIR via scrapers_realtime
         own1 = a.get('OWN_NAME1','') or ''
         own2 = a.get('OWN_NAME2','') or ''
         owner = ' '.join(filter(None, [own1.strip(), own2.strip()])).strip() or None
         if not addr: continue
+        mkt = a.get('TOTAL_MKT_VALUE')
+        primary_res = a.get('PRIMARY_RES')
+        # Absentee owners sell materially more often than owner-occupiers, so a
+        # non-primary-residence parcel is scored above the baseline.
+        score = 45
+        if str(primary_res).upper() in ('N','NO','0','FALSE'):
+            score = 58
         signals.append({
-            'source_slug': slug, 'signal_type': 'lir_parcel', 'score': 45,
+            'source_slug': slug, 'signal_type': 'lir_parcel', 'score': score,
             'county': county, 'city': city or None,
             'raw_owner_name': clean_owner(owner) if owner else None,
             'raw_address': f"{addr}, {city}".strip(', ') if city else addr,
+            'raw_payload': json.dumps({
+                'parcel_id':    a.get('PARCEL_ID') or a.get('SERIAL_NUM'),
+                'serial_num':   a.get('SERIAL_NUM'),
+                'market_value': mkt,
+                'land_value':   a.get('LAND_MKT_VALUE'),
+                'acres':        a.get('PARCEL_ACRES'),
+                'prop_class':   a.get('PROP_CLASS'),
+                'primary_res':  primary_res,
+                'bldg_sqft':    a.get('BLDG_SQFT'),
+                'built_yr':     a.get('BUILT_YR'),
+                'zip':          a.get('PARCEL_ZIP'),
+            }),
         })
     return post_batch(signals)
 
