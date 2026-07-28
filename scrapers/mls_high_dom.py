@@ -93,6 +93,14 @@ def run() -> int:
     # Auto-refreshing session: uses URE_SESSION_COOKIE if it is still live,
     # otherwise logs in with URE_USERNAME / URE_PASSWORD and mints a fresh one.
     # One login is shared across all four MLS scrapers per run.
+    # MLS is SIDELINED by decision (July 2026). UtahRealEstate enforces device-based
+    # 2FA: credentials authenticate fine, but the session is not search-authorized
+    # until a one-time code sent to the member's phone is entered, and every CI run
+    # is a fresh "unrecognised computer". No credential automation can pass that.
+    # Set MLS_ENABLED=true only when a trusted-device cookie has been supplied.
+    if os.environ.get('MLS_ENABLED', 'false').lower() not in ('1','true','yes'):
+        log.info(f'[{SOURCE_SLUG}] sidelined (MLS_ENABLED not set) — skipping cleanly')
+        return 0
     try:
         from ure_auth import get_cookie
     except ImportError:
