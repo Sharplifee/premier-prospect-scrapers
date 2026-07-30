@@ -439,7 +439,16 @@ def scrape_nod_tracker():
         '8S Range 2W':'Santaquin','8S Range 3E':'Woodland Hills',
         '9S Range 1W':'Genola','9S Range 1E':'Santaquin','9S Range 2E':'Eureka',
     }
-    NOD_KOIS = {'N DEFAULT','DEFLT','NOD','NOTICE OF DEFAULT','N DEF'}
+    # Utah County's DocDesc filter is broken server-side, so this pulls recent
+    # recordings and filters by KOI client-side. The original set only looked for
+    # literal default wording and matched NOTHING for 45+ days while the source
+    # was healthy — verified July 2026 by fetching the live page, which returns
+    # real records but no 'DEFAULT' codes.
+    # Added: SUB TEE / RSUBTEE / SUBTEE — substitution of trustee. A lender
+    # swapping the trustee is the step immediately before a trustee sale is
+    # noticed, so it is a legitimate (and earlier) distress signal than NTS.
+    NOD_KOIS = {'N DEFAULT','DEFLT','NOD','NOTICE OF DEFAULT','N DEF','N DFLT',
+                'SUB TEE','SUBTEE','RSUBTEE','SUB TRUSTEE','R SUB TEE'}
     def city_from_plss(text):
         m = _re.search(r'(\d+S Range \d+[EW])', text or '')
         return PLSS_CITY.get(m.group(1)) if m else None
