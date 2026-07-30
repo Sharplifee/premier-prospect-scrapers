@@ -571,7 +571,12 @@ def scrape_utah_county_tax_delinquency_pdf():
                            re.search(r'\d{4,}\s+\w+\s+(?:ST|AVE|DR|LN|BLVD|WAY|RD|CT)', line.upper()):
                             batch.append({
                                 'source_slug': slug, 'signal_type': 'tax_delinquency',
-                                'score': 75, 'county': 'Utah', 'city': None,
+                                # Backtested July 2026 against recorded sales: tax delinquency
+                                # ALONE converts at 0.22% (2,315 owners), but combined with 2+
+                                # other distress signals it converted 10/10. Weak anchor, strong
+                                # corroborator — so it sits in the nurture band on its own and
+                                # earns its weight through the convergence engine instead.
+                                'score': 55, 'county': 'Utah', 'city': None,
                                 'raw_owner_name': None, 'raw_address': line[:200],
                             })
                     continue
@@ -586,7 +591,7 @@ def scrape_utah_county_tax_delinquency_pdf():
                     if owner or parcel:
                         batch.append({
                             'source_slug': slug, 'signal_type': 'tax_delinquency',
-                            'score': 75, 'county': 'Utah', 'city': None,
+                            'score': 55, 'county': 'Utah', 'city': None,  # see backtest note above
                             'raw_owner_name': owner[:200] or None,
                             'raw_address': (address or parcel)[:200] or None,
                         })
