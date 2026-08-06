@@ -414,6 +414,82 @@ def scrape_utah_county_nts():
         if 'Next' not in r.text: break
     return post_batch(signals)
 
+# ─── UTAH COUNTY RECORDER — UNIFIED HIGH-VALUE KOI SWEEP ─────────────────────
+# Added Jul 30 2026 after a full KOI inventory of the live recorder feed revealed
+# several high-motivation document types the system had never captured. All of
+# these are FREE and require no court subscription:
+#
+#   PR LP    lis pendens          judicial foreclosure / suit against the property
+#   PERREPD  personal rep deed    an ESTATE is selling — confirmed probate sale
+#   AF DC    affidavit of death   owner died — recorded, dated death signal
+#   TEE D    trustee's deed       foreclosure COMPLETED → retires the lead
+#   M CHGCN  mechanics lien       unpaid contractor, stalled renovation
+#   N LN     notice of lien       creditor pressure
+#   R LN     release of lien      NEGATIVE signal — debt cleared
+#
+# One pass over the recorder index serves all of them, which is far kinder to the
+# county server than one request per document type.
+#
+# NOTE: utahcounty.gov intermittently returns HTTP 500 on this endpoint even when
+# healthy — observed 2 failures then success on the 3rd try. safe_get retries, but
+# a 500 here means "try again", NOT "no records".
+RECORDER_KOI_MAP = {
+    'PR LP':   ('lis_pendens',      90),
+    'PERREPD': ('probate_deed',     88),
+    'AF DC':   ('death_affidavit',  85),
+    'TEE D':   ('trustee_deed',     92),
+    'M CHGCN': ('mechanics_lien',   70),
+    'N LN':    ('lien_judgment',    68),
+    'R LN':    ('lien_release',     30),   # negative — debt cleared
+    'WD':      ('deed_transfer',    55),
+    'SP WD':   ('deed_transfer',    55),
+    'QCD':     ('family_transfer',  50),
+}
+
+def scrape_utah_recorder_unified():
+    slug = 'utah-recorder-unified'
+    log.info(f'[{slug}] starting')
+    signals = []
+    seen = set()
+    for offset in (0, 200, 400, 600):
+        url = ('https://www.utahcounty.gov/LandRecords/DocDescSearch.asp'
+               f'?DocDesc=&DateRange=30&County=Utah&offset={offset}')
+        r = safe_get(url, timeout=40)
+        if not r or '500 - Internal server error' in r.text:
+            log.warning(f'[{slug}] offset {offset}: server returned an error page — skipping page')
+            continue
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', r.text, re.S | re.I)
+        for row in rows:
+            cells = [re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', c)).replace('\xa0', ' ').strip()
+                     for c in re.findall(r'<td[^>]*>(.*?)</td>', row, re.S | re.I)]
+            # layout: Description | Rec Date | KOI | Entry # | Grantor | Grantee
+            if len(cells) < 6:
+                continue
+            plss, rec_date, koi, entry, grantor, grantee = cells[0], cells[1], cells[2], cells[3], cells[4], cells[5]
+            if koi not in RECORDER_KOI_MAP:
+                continue
+            if not entry or entry in seen:
+                continue
+            seen.add(entry)
+            signal_type, score = RECORDER_KOI_MAP[koi]
+            # city is derived downstream by pp_auto_tag_institutional from the PLSS text
+            signals.append({
+                'source_slug': slug, 'signal_type': signal_type, 'score': score,
+                'county': 'Utah', 'city': None,
+                'raw_owner_name': grantor or None,
+                'raw_address': f'{signal_type.replace("_"," ").upper()} — Entry #{entry}',
+                'raw_payload': json.dumps({
+                    'koi': koi, 'rec_date': rec_date, 'entry': entry,
+                    'plss_section': plss, 'grantor': grantor, 'grantee': grantee,
+                }),
+            })
+        if 'Next' not in r.text:
+            break
+    log.info(f'[{slug}] parsed {len(signals)} signals across '
+             f'{len(set(s["signal_type"] for s in signals))} document types')
+    return post_batch(signals)
+
+
 # ─── NOD TRACKER ─────────────────────────────────────────────────────────────
 def scrape_nod_tracker():
     """
@@ -1897,6 +1973,7 @@ SCRAPERS = [
     # Core distress — most important, run every cycle
     ('utah-county-nts',             scrape_utah_county_nts),
     ('nod-tracker',                 scrape_nod_tracker),
+    ('utah-recorder-unified',       scrape_utah_recorder_unified),
     ('lien-judgment-records',       scrape_lien_judgment_records),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
