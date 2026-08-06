@@ -1974,22 +1974,11 @@ SCRAPERS = [
     ('utah-county-nts',             scrape_utah_county_nts),
     ('nod-tracker',                 scrape_nod_tracker),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
-    ('lien-judgment-records',       scrape_lien_judgment_records),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
-    ('deed-transfers-utah-county',  scrape_deed_transfers_utah_county),
     # Fire marshal
-    ('fire-marshal-lp-gas',         scrape_fire_marshal_lp_gas),
-    ('fire-marshal-suppression',    scrape_fire_marshal_suppression),
-    ('fire-marshal-lp-hvac',        scrape_fire_marshal_lp_hvac),
     # LIR parcels
-    ('slco-lir-parcels',            scrape_slco_lir_parcels),
-    ('davis-lir-parcels',           scrape_davis_lir_parcels),
-    ('weber-lir-parcels',           scrape_weber_lir_parcels),
     # Extended AGRC parcel coverage (bonus counties)
-    ('utah-lir-parcels',            scrape_utah_county_parcels if REALTIME_LOADED else lambda: 0),
-    ('wasatch-lir-parcels',         scrape_wasatch_parcels if REALTIME_LOADED else lambda: 0),
-    ('summit-lir-parcels',          scrape_summit_parcels if REALTIME_LOADED else lambda: 0),
     # SLCO Recorder — real-time NTS/NOD/Deed/Lien for Salt Lake County
     ('slco-recorder-live',          scrape_slco_recorder if REALTIME_LOADED else lambda: 0),
     # HMDA — daily only (now live 2024/2025 data)
