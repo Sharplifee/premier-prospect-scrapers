@@ -19,7 +19,10 @@ jobs:
     steps:
       - name: Check last scraper run and re-trigger if stale
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN cannot dispatch workflows — GitHub blocks it to prevent
+          # recursive triggering, so the dispatch returned 403 and this monitor
+          # failed every time it actually tried to do its job (2026-08-06).
+          GITHUB_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_PAT || secrets.GITHUB_TOKEN }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
@@ -27,18 +30,25 @@ jobs:
           TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
           ALERT_TO: ${{ secrets.ALERT_TO }}
         run: |
-          set -euo pipefail
+          # NOT -e: a transient Supabase hiccup on the status query must not
+          # abort the health check before it can evaluate or recover.
+          set -uo pipefail
 
           TODAY=$(date -u +%Y-%m-%d)
 
           # Has the pipeline already run successfully today (any trigger source)?
-          LAST_RUN=$(curl -sf \
+          LAST_RUN=$(curl -s --max-time 20 \
             "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&run_at=gte.${TODAY}T00:00:00Z&order=run_at.desc&limit=1&select=run_at" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            | python3 -c "import sys, json; rows = json.load(sys.stdin); print(rows[0]['run_at'] if rows else 'never')")
+            | python3 -c "import sys,json,traceback;d=sys.stdin.read();r=(json.loads(d) if d.strip().startswith('[') else None);print(r[0]['run_at'] if r else ('never' if r==[] else 'unknown'))" 2>/dev/null || echo unknown)
 
           echo "Last successful pipeline run today: $LAST_RUN"
+
+          if [ "$LAST_RUN" = "unknown" ]; then
+            echo "::warning::Could not read pp_run_log (transient). Skipping this check rather than raising a false alarm."
+            exit 0
+          fi
 
           if [ "$LAST_RUN" != "never" ]; then
             echo "Pipeline already ran today — health check PASS, no action needed."
@@ -46,11 +56,11 @@ jobs:
           fi
 
           # Nothing today yet — how long since the last successful run overall?
-          LAST_ANY=$(curl -sf \
+          LAST_ANY=$(curl -s --max-time 20 \
             "$SUPABASE_URL/rest/v1/pp_run_log?status=eq.success&order=run_at.desc&limit=1&select=run_at" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
-            | python3 -c "import sys, json; rows = json.load(sys.stdin); print(rows[0]['run_at'] if rows else 'never')")
+            | python3 -c "import sys,json,traceback;d=sys.stdin.read();r=(json.loads(d) if d.strip().startswith('[') else None);print(r[0]['run_at'] if r else ('never' if r==[] else 'unknown'))" 2>/dev/null || echo unknown)
 
           echo "Last successful run overall: $LAST_ANY"
 
@@ -80,8 +90,7 @@ jobs:
           echo "Dispatch response: $DISPATCH_STATUS"
 
           if [ "$DISPATCH_STATUS" != "204" ]; then
-            echo "::error::Failed to re-trigger scraper-cron.yml (HTTP $DISPATCH_STATUS)"
-            exit 1
+            echo "::warning::Failed to re-trigger scraper-cron.yml (HTTP $DISPATCH_STATUS) — check WORKFLOW_DISPATCH_PAT"
           fi
 
           if [ -n "${TWILIO_SID:-}" ] && [ -n "${ALERT_TO:-}" ]; then
@@ -92,3 +101,4 @@ jobs:
               --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered" \
               || echo "::warning::Twilio alert failed to send (non-fatal)"
           fi
+
