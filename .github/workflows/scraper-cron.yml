@@ -62,6 +62,13 @@ jobs:
 
       - name: Keepalive commit (prevents GitHub cron pause)
         if: always()
+        # continue-on-error: this step is HOUSEKEEPING ONLY. It exists to stop
+        # GitHub auto-pausing the schedule on a low-activity repo. It must never
+        # mark a run failed — on 2026-08-06 a code push landed mid-run, this push
+        # was rejected as non-fast-forward, and a run whose scrapers had all
+        # SUCCEEDED was reported as a failure, which then tripped the health
+        # monitor and fired a false Twilio alert.
+        continue-on-error: true
         run: |
           git config user.name "Premier Prospect Bot"
           git config user.email "bot@premierprospect.co"
@@ -69,10 +76,21 @@ jobs:
           echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') run #${{ github.run_number }}" >> .keepalive
           git add .keepalive
           git diff --staged --quiet || git commit -m "keepalive: run #${{ github.run_number }} [skip ci]"
-          git push origin main
+          # Rebase onto whatever landed while this run was executing, then retry.
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              echo "keepalive pushed on attempt $attempt"; exit 0
+            fi
+            echo "push rejected (attempt $attempt) — rebasing onto origin/main and retrying"
+            git fetch origin main && git rebase origin/main || git rebase --abort
+            sleep 5
+          done
+          echo "::warning::keepalive push failed after 3 attempts — non-fatal, scraper data is unaffected"
 
       - name: Alert on failure
-        if: failure()
+        # Scoped to the scrapers step specifically. Previously any step failing
+        # (including keepalive housekeeping) fired a false alarm.
+        if: failure() && steps.scrapers.outcome == 'failure'
         run: |
           curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_SID }}/Messages.json" \
             --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" \
