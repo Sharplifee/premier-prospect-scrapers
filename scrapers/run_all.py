@@ -518,6 +518,78 @@ def scrape_lien_judgment_records():
             })
     return post_batch(signals)
 
+
+# ─── UNIFIED UTAH COUNTY RECORDER ─────────────────────────────────────────────
+# Utah County's server-side DocDesc filter is BROKEN — POSTing a document
+# description returns an unfiltered/empty result set. Four scrapers relying on it
+# (lien-judgment-records, deed-transfers-utah-county, marriage-records-slco,
+# loopnet-utah) silently returned ZERO for weeks while logging clean runs, and
+# nod-tracker did the same until July 2026.
+#
+# This pulls the recent recording feed once and filters CLIENT-SIDE by KOI code,
+# which is what actually works. Row layout (verified Aug 2026):
+#   [0] PLSS description  [1] datetime  [2] KOI  [3] entry+year  [4] grantor  [5] grantee
+# Note cell[0] is the PLSS description, so KOI is index 2 — the old scrapers read
+# index 3 for entry assuming a different layout.
+RECORDER_KOI_MAP = {
+    # code        (signal_type,        score, label)
+    'PR LP':      ('lis_pendens',        90, 'Lis pendens — litigation/judicial foreclosure'),
+    'PERREPD':    ('probate_deed',       88, 'Personal representative deed — estate selling'),
+    'AF DC':      ('death_affidavit',    85, 'Affidavit of death — owner deceased'),
+    'TEE D':      ('trustee_deed',       92, 'Trustee deed — foreclosure completed'),
+    'N LN':       ('lien_judgment',      68, 'Notice of lien'),
+    'M CHGCN':    ('mechanics_lien',     70, 'Mechanics/construction lien'),
+    'R LN':       ('lien_release',       30, 'Lien released — debt cleared'),
+    'WD':         ('deed_transfer',      55, 'Warranty deed'),
+    'SP WD':      ('deed_transfer',      55, 'Special warranty deed'),
+    'QCD':        ('family_transfer',    50, 'Quit claim deed'),
+}
+
+def scrape_utah_recorder_unified():
+    slug = 'utah-recorder-unified'
+    log.info(f'[{slug}] starting')
+    signals, seen = [], set()
+    for offset in (0, 200, 400, 600):
+        r = safe_get(
+            'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+            params={'DocDesc': '', 'DateRange': '30', 'County': 'Utah', 'offset': offset},
+            timeout=45
+        )
+        if not r:
+            log.warning(f'[{slug}] offset {offset} unreachable')
+            continue
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for row in soup.select('tr'):
+            cells = row.select('td')
+            if len(cells) < 6:
+                continue
+            rec_dt = cells[1].get_text(strip=True)
+            koi    = cells[2].get_text(strip=True)
+            entry  = cells[3].get_text(' ', strip=True).replace('\xa0', ' ')
+            grantor = cells[4].get_text(strip=True)
+            grantee = cells[5].get_text(strip=True)
+            if not re.match(r'^\d+/\d+/\d{4}', rec_dt) or koi not in RECORDER_KOI_MAP:
+                continue
+            if not entry or entry in seen:
+                continue
+            seen.add(entry)
+            sig_type, score, label = RECORDER_KOI_MAP[koi]
+            # On a trustee deed / death affidavit the GRANTOR is the party of
+            # interest (the foreclosed owner / the decedent).
+            signals.append({
+                'source_slug': slug, 'signal_type': sig_type, 'score': score,
+                'county': 'Utah', 'city': None,
+                'raw_owner_name': clean_owner(grantor) if grantor else None,
+                'raw_address': f'Entry #{entry}',
+                'raw_payload': json.dumps({
+                    'koi': koi, 'label': label, 'entry': entry,
+                    'rec_date': rec_dt, 'grantor': grantor, 'grantee': grantee,
+                }),
+            })
+        time.sleep(2)   # county server — be polite
+    log.info(f'[{slug}] {len(signals)} signals across {len(RECORDER_KOI_MAP)} document types')
+    return post_batch(signals)
+
 # ─── DEED TRANSFERS ───────────────────────────────────────────────────────────
 def scrape_deed_transfers_utah_county():
     slug = 'deed-transfers-utah-county'
@@ -1827,6 +1899,7 @@ SCRAPERS = [
     ('nod-tracker',                 scrape_nod_tracker),
     ('lien-judgment-records',       scrape_lien_judgment_records),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
+    ('utah-recorder-unified',       scrape_utah_recorder_unified),
     ('deed-transfers-utah-county',  scrape_deed_transfers_utah_county),
     # Fire marshal
     ('fire-marshal-lp-gas',         scrape_fire_marshal_lp_gas),
