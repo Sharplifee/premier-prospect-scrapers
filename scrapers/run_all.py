@@ -651,7 +651,11 @@ def scrape_deeds_of_trust():
         txt = re.sub(r'\s+',' ', re.sub(r'<[^>]+>',' ', d.text))
         amt = re.search(r'Consideration:\s*\$?([\d,]+\.?\d*)', txt)
         idt = re.search(r'Instrument Date:\s*([\d/]+)', txt)
-        rel = re.search(r'Releases:\s*(\S[^A]{0,30})', txt)
+        # A real release names a releasing document, e.g.
+        # "Releases: Type A Entry 60927 Year 2026". The field is EMPTY when the
+        # loan is still outstanding. The previous pattern matched the following
+        # label text and therefore flagged every deed as released.
+        rel = re.search(r'Releases:\s*Type\s+\w+\s+Entry\s+\d+', txt)
         if not amt: continue
         try: loan = float(amt.group(1).replace(',',''))
         except Exception: continue
