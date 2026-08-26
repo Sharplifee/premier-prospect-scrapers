@@ -523,8 +523,10 @@ def scrape_nod_tracker():
     # Added: SUB TEE / RSUBTEE / SUBTEE — substitution of trustee. A lender
     # swapping the trustee is the step immediately before a trustee sale is
     # noticed, so it is a legitimate (and earlier) distress signal than NTS.
-    NOD_KOIS = {'N DEFAULT','DEFLT','NOD','NOTICE OF DEFAULT','N DEF','N DFLT',
-                'SUB TEE','SUBTEE','RSUBTEE','SUB TRUSTEE','R SUB TEE'}
+    # SUB TEE / RSUBTEE moved to utah-recorder-unified, which uses the working
+    # client-side KOI filter. RSUBTEE was ALSO wrong here: it is a reconveyance
+    # (debt satisfied), not a default. Left with true default wording only.
+    NOD_KOIS = {'N DEFAULT','DEFLT','NOD','NOTICE OF DEFAULT','N DEF','N DFLT'}
     def city_from_plss(text):
         m = _re.search(r'(\d+S Range \d+[EW])', text or '')
         return PLSS_CITY.get(m.group(1)) if m else None
@@ -616,6 +618,17 @@ RECORDER_KOI_MAP = {
     'N LN':       ('lien_judgment',      68, 'Notice of lien'),
     'M CHGCN':    ('mechanics_lien',     70, 'Mechanics/construction lien'),
     'R LN':       ('lien_release',       30, 'Lien released — debt cleared'),
+    # VERIFIED Aug 2026 from the county document detail page:
+    #   SUB TEE = "TRUSTEE-SUBSTITUTION" — the lender swapping in a successor
+    #     trustee, the step immediately BEFORE a trustee sale is noticed. Real
+    #     pre-foreclosure distress, and earlier than an NTS.
+    #   RSUBTEE = "TRUSTEE-SUBSTITUTION & DEED OF RECONVEYANCE" — a reconveyance
+    #     means the debt was SATISFIED and the trust deed released. That is a
+    #     RESOLUTION, not distress. Scoring it as distress previously put 158
+    #     paid-off homeowners into the primed calling queue.
+    'SUB TEE':    ('trustee_substitution', 88, 'Substitution of trustee — pre-foreclosure'),
+    'SUBTEE':     ('trustee_substitution', 88, 'Substitution of trustee — pre-foreclosure'),
+    'RSUBTEE':    ('loan_reconveyance',    25, 'Trustee substitution WITH reconveyance — debt satisfied'),
     'WD':         ('deed_transfer',      55, 'Warranty deed'),
     'SP WD':      ('deed_transfer',      55, 'Special warranty deed'),
     'QCD':        ('family_transfer',    50, 'Quit claim deed'),
