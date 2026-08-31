@@ -29,7 +29,12 @@ SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']
 APIFY_TOKEN  = os.environ.get('APIFY_TOKEN', '')
 # MLS scrapers pending auth resolution — credentials removed
 
-TABLE_URL = f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
+# on_conflict=dedupe_hash is REQUIRED. Without it, PostgREST's
+# "resolution=ignore-duplicates" only applies to the primary key (id, a serial
+# that never conflicts), so a single duplicate row rejected the ENTIRE 200-row
+# batch with 409 — silently dropping every genuinely new row alongside it.
+# Verified Aug 31 2026. post_batch treats 409 as success, which hid this.
+TABLE_URL = f"{SUPABASE_URL}/rest/v1/pp_scraper_signals?on_conflict=dedupe_hash"
 HEADERS = {
     'Authorization': f'Bearer {SUPABASE_KEY}',
     'Content-Type': 'application/json',
@@ -2065,7 +2070,6 @@ def scrape_comparable_sales_slco():
 SCRAPERS = [
     # Core distress — most important, run every cycle
     ('utah-county-nts',             scrape_utah_county_nts),
-    ('nod-tracker',                 scrape_nod_tracker),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
     ('utah-deeds-of-trust',         scrape_deeds_of_trust),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
@@ -2076,11 +2080,7 @@ SCRAPERS = [
     # SLCO Recorder — real-time NTS/NOD/Deed/Lien for Salt Lake County
     ('slco-recorder-live',          scrape_slco_recorder if REALTIME_LOADED else lambda: 0),
     # HMDA — daily only (now live 2024/2025 data)
-    ('hmda-utah-county',            scrape_hmda_utah_county),
-    ('hmda-slc-county',             scrape_hmda_slc_county),
     # FSBO & marketplace
-    ('ksl-fsbo-extended',           scrape_ksl_fsbo_extended),
-    ('rentler-utah',                scrape_rentler_utah),
     ('trulia-utah',                 scrape_trulia_utah),
     ('hubzu-utah',                  scrape_hubzu_utah),
     ('reo-utah',                    scrape_reo_utah),
@@ -2089,15 +2089,9 @@ SCRAPERS = [
     ('forsalebyowner-utah',         scrape_forsalebyowner_utah),
     # Enrichment
     ('obituaries-enrichment',       scrape_obituaries_enrichment),
-    ('competitor-buyer-forms',      scrape_competitor_buyer_forms),
     # Buyer side — daily only
-    ('warn-act-utah',               scrape_warn_act_utah),
-    ('school-district-enrollment',  scrape_school_district_enrollment),
-    ('marriage-records-slco',       scrape_marriage_records_slco),
-    ('silicon-slopes-newhires',     scrape_silicon_slopes_newhires),
     ('uhaul-penske-monitor',        scrape_uhaul_penske_monitor),
     # Buyer signals
-    ('uvhba-directory',             scrape_uvhba_directory),
     ('comparable-sales-slco',       scrape_comparable_sales_slco),
     # Market data → pp_market_data
     ('realtor-market-utah',         scrape_realtor_market_utah),
@@ -2148,26 +2142,17 @@ if __name__ == '__main__':
     # its own timeout. KPI counts only read from small indexed tables.
     log.info('Refreshing pipeline intelligence...')
 
-    # Step 1: Populate buyer profiles from recent signals (scoped 365d, fast)
-    # RPC_HEADERS used (not HEADERS) — the ignore-duplicates Prefer directive is
-    # insert-only and causes PostgREST to 500 on any RPC POST. Confirmed root
-    # cause of the matching engine / KPI cache failures since June 27.
-    try:
-        r_pop = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/pp_populate_buyer_profiles",
-            headers=RPC_HEADERS,
-            json={}, timeout=90
-        )
-        log.info(f'  populate buyer profiles: {r_pop.status_code}')
-    except Exception as e:
-        log.warning(f'  populate buyer profiles failed: {e}')
+    # BUYER LAYER RETIRED (Aug 31 2026). The buyer profiles were website names
+    # and page boilerplate ("Redfin SLC", "KW Utah", SLCO nav text, news
+    # headlines) — never people. Zero of 990 had a phone or email because none
+    # existed. pp_populate_buyer_profiles and pp_trigger_matching_engine are no
+    # longer called. Rebuild the buyer side only from a source that yields
+    # identifiable humans with purchase intent.
 
-    # Step 2: Convergence / conviction scoring.
+    # Step 1: Convergence / conviction scoring.
     # Aggregates every live signal per resolved owner entity into one conviction
     # score (anchor + signal-type diversity, recency-decayed, plus clustering,
     # tax-escalation, absentee, contactability, and kill signals).
-    # ORDER IS LOAD-BEARING: the matching engine reads pp_entity_conviction, so
-    # this must run BEFORE matching or matching scores against stale conviction.
     try:
         r_conv = requests.post(
             f"{SUPABASE_URL}/rest/v1/rpc/pp_compute_convergence",
@@ -2179,21 +2164,7 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'  Convergence failed: {e}')
 
-    # Step 3: Matching engine via void wrapper (pp_trigger_matching_engine).
-    # Consumes the conviction scores written in Step 2.
-    try:
-        r_match = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/pp_trigger_matching_engine",
-            headers=RPC_HEADERS,
-            json={'p_limit': 500}, timeout=60
-        )
-        log.info(f'  matching engine: {r_match.status_code}')
-        if r_match.status_code >= 400:
-            log.warning(f'  matching engine body: {r_match.text[:300]}')
-    except Exception as e:
-        log.warning(f'  matching engine failed: {e}')
-
-    # Step 4: KPI cache — void return
+    # Step 2: KPI cache — void return
     # Retried on failure: right after 43 scrapers finish their batch inserts,
     # the DB can be under transient load and this call can 500 with a 57014
     # statement timeout even though the function itself completes in <3s once
