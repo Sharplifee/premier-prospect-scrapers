@@ -1836,22 +1836,12 @@ SCRAPERS = [
     ('slco-recorder-live',          scrape_slco_recorder if REALTIME_LOADED else lambda: 0),
     # HMDA — daily only (now live 2024/2025 data)
     # FSBO & marketplace
-    ('trulia-utah',                 scrape_trulia_utah),
-    ('hubzu-utah',                  scrape_hubzu_utah),
-    ('reo-utah',                    scrape_reo_utah),
-    ('auction-com-utah',            scrape_auction_com_utah),
-    ('loopnet-utah',                scrape_loopnet_utah),
-    ('forsalebyowner-utah',         scrape_forsalebyowner_utah),
     # Enrichment
     ('obituaries-enrichment',       scrape_obituaries_enrichment),
     # Buyer side — daily only
-    ('uhaul-penske-monitor',        scrape_uhaul_penske_monitor),
     # Buyer signals
     ('comparable-sales-slco',       scrape_comparable_sales_slco),
     # Market data → pp_market_data
-    ('realtor-market-utah',         scrape_realtor_market_utah),
-    ('zillow-market-signals',       scrape_zillow_market_signals),
-    ('zillow-home-values',          scrape_zillow_home_values),
     # MLS (no-op until token)
     ('mls-expired-listings',        scrape_mls_expired),
     ('mls-price-reductions',        scrape_mls_price_reductions),
