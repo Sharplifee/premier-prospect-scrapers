@@ -1909,6 +1909,21 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'  Convergence failed: {e}')
 
+    # Buyer intelligence: the grantee on a recorded warranty deed is a PROVEN
+    # buyer — someone who completed a purchase, with an entry number anyone can
+    # verify. Repeat grantees are active acquirers. Must run after convergence
+    # so it sees the same deed set.
+    try:
+        r_buy = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_compute_buyers",
+            headers=RPC_HEADERS, json={}, timeout=180
+        )
+        log.info(f'  Buyer intelligence: {r_buy.status_code} buyers={r_buy.text[:20]}')
+        if r_buy.status_code >= 400:
+            log.error(f'  Buyer intelligence FAILED: {r_buy.text[:250]}')
+    except Exception as e:
+        log.error(f'  Buyer intelligence failed: {e}')
+
     # Step 2: KPI cache — void return
     # Retried on failure: right after 43 scrapers finish their batch inserts,
     # the DB can be under transient load and this call can 500 with a 57014
