@@ -1924,6 +1924,20 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'  Buyer intelligence failed: {e}')
 
+    # App cache: the iOS app's anon role has a 3s statement timeout, and the
+    # overview aggregates take longer than that computed live. Cache them here
+    # so the app reads one row. Runs after convergence and buyers.
+    try:
+        r_app = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_app_cache",
+            headers=RPC_HEADERS, json={}, timeout=180
+        )
+        log.info(f'  App cache: {r_app.status_code}')
+        if r_app.status_code >= 400:
+            log.error(f'  App cache FAILED: {r_app.text[:250]}')
+    except Exception as e:
+        log.error(f'  App cache failed: {e}')
+
     # Step 2: KPI cache — void return
     # Retried on failure: right after 43 scrapers finish their batch inserts,
     # the DB can be under transient load and this call can 500 with a 57014
