@@ -2030,7 +2030,7 @@ if __name__ == '__main__':
             r_kpi = requests.post(
                 f"{SUPABASE_URL}/rest/v1/rpc/pp_refresh_kpi_cache",
                 headers=RPC_HEADERS,
-                json={}, timeout=30
+                json={}, timeout=120
             )
             log.info(f'  KPI cache (attempt {attempt}): {r_kpi.status_code}')
             if r_kpi.status_code < 400:
