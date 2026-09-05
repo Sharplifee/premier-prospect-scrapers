@@ -438,6 +438,85 @@ def scrape_utah_county_nts():
 # NOTE: utahcounty.gov intermittently returns HTTP 500 on this endpoint even when
 # healthy — observed 2 failures then success on the 3rd try. safe_get retries, but
 # a 500 here means "try again", NOT "no records".
+# ─── DEEDS OF TRUST → LOAN BURDEN / EQUITY PROXY ──────────────────────────────
+# The recorder INDEX carries no dollar amounts, but each document's detail page
+# does: "Consideration: $409,000.00" is the ORIGINAL LOAN AMOUNT on a trust deed.
+# Verified live Aug 2026 (entries 68982, 69741, 60798).
+#
+# HONEST LIMITS, do not overstate this:
+#   * Serial Number(s) and Mail Address are usually EMPTY on these documents, so
+#     we cannot join to a parcel or harvest a mailing address here. We join on
+#     the GRANTOR (borrower) name, same as every other recorder signal.
+#   * TRUE equity % needs assessed market value, which the AGRC parcel layer does
+#     NOT carry. So this computes a LOAN-VINTAGE PROXY instead: a 2005 trust deed
+#     is mostly amortised (likely high equity), a 2025 one is not. That is a
+#     proxy, not a measurement, and is scored modestly to reflect that.
+#   * "Releases:" populated means the debt was satisfied — that loan must NOT
+#     count against equity.
+def scrape_deeds_of_trust():
+    slug = 'utah-deeds-of-trust'
+    log.info(f'[{slug}] starting')
+    entries, signals = [], []
+    for offset in (0, 200):
+        r = safe_get('https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                     params={'DocDesc':'','DateRange':'30','County':'Utah','offset':offset},
+                     timeout=45)
+        if not r:
+            log.warning(f'[{slug}] index offset {offset} unreachable'); continue
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for row in soup.select('tr'):
+            c = row.select('td')
+            if len(c) < 6: continue
+            koi = c[2].get_text(strip=True)
+            if koi not in ('TR D','D TR'): continue
+            m = re.match(r'(\d+)', c[3].get_text(' ', strip=True).replace('\xa0',' '))
+            if not m: continue
+            entries.append((m.group(1), c[4].get_text(strip=True), c[5].get_text(strip=True)))
+        time.sleep(2)
+
+    # de-dup and cap: this is one HTTP request per document against a county
+    # server, so stay polite and bounded.
+    seen, uniq = set(), []
+    for e in entries:
+        if e[0] not in seen:
+            seen.add(e[0]); uniq.append(e)
+    uniq = uniq[:60]
+    log.info(f'[{slug}] {len(uniq)} unique trust deeds to detail-fetch')
+
+    for entry, grantor, grantee in uniq:
+        d = safe_get(f'https://www.utahcounty.gov/LandRecords/document.asp',
+                     params={'avEntry': entry, 'avYear': datetime.datetime.now().year},
+                     timeout=30)
+        if not d: continue
+        txt = re.sub(r'\s+',' ', re.sub(r'<[^>]+>',' ', d.text))
+        amt = re.search(r'Consideration:\s*\$?([\d,]+\.?\d*)', txt)
+        idt = re.search(r'Instrument Date:\s*([\d/]+)', txt)
+        # A real release names a releasing document, e.g.
+        # "Releases: Type A Entry 60927 Year 2026". The field is EMPTY when the
+        # loan is still outstanding. The previous pattern matched the following
+        # label text and therefore flagged every deed as released.
+        rel = re.search(r'Releases:\s*Type\s+\w+\s+Entry\s+\d+', txt)
+        if not amt: continue
+        try: loan = float(amt.group(1).replace(',',''))
+        except Exception: continue
+        if loan <= 0: continue
+        signals.append({
+            'source_slug': slug, 'signal_type': 'deed_of_trust',
+            'score': 35,                      # CONTEXT, not distress — must never anchor a lead
+            'county': 'Utah', 'city': None,
+            'raw_owner_name': clean_owner(grantor) if grantor else None,
+            'raw_address': f'Trust Deed — Entry #{entry}',
+            'raw_payload': json.dumps({
+                'entry': entry, 'loan_amount': loan,
+                'loan_date': idt.group(1) if idt else None,
+                'lender': grantee, 'borrower': grantor,
+                'released': bool(rel),
+            }),
+        })
+        time.sleep(1.2)   # ~1 req/sec against the county
+    log.info(f'[{slug}] {len(signals)} trust deeds with loan amounts')
+    return post_batch(signals)
+
 # ─── UNIFIED UTAH COUNTY RECORDER ─────────────────────────────────────────────
 # Utah County's server-side DocDesc filter is BROKEN — POSTing a document
 # description returns an unfiltered/empty result set. Four scrapers relying on it
