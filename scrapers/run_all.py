@@ -517,6 +517,91 @@ def scrape_deeds_of_trust():
     log.info(f'[{slug}] {len(signals)} trust deeds with loan amounts')
     return post_batch(signals)
 
+
+# ─── SUMMIT COUNTY (Park City) — Eagle Web recorder ────────────────────────
+# Summit runs Tyler Eagle Web with a PUBLIC guest login and a full document
+# search: 225 document types, date range, grantor/grantee, parcel. Verified live
+# Sept 2026: 120 distress filings in 30 days. Flow: GET login.jsp → POST
+# loginPOST.jsp {guest:true} → GET docSearch.jsp (sets session) → POST
+# docSearchPOST.jsp with repeated __search_select values (multi-select) and
+# AllDocuments UNCHECKED → results at docSearchResults.jsp?searchId=0.
+# Row layout (pipe-split after tag strip): [type] [docnum] … [B: P:] …
+# [mm/dd/yyyy hh:mm] … Related: … [parcel] … From: [grantor] To: [grantee] Subd: …
+SUMMIT_TYPES = {
+    '313': ('nts',                   99, "Notice of Trustee's Sale"),
+    '116': ('nod',                   88, 'Notice of Default'),
+    '636': ('nod',                   88, 'Appoint of TR and Notice of Default'),
+    '159': ('trustee_substitution',  88, 'Appointment of Successor Trustee'),
+    '326': ('lis_pendens',           90, 'Lis Pendens'),
+    '150': ('lien_judgment',         68, 'Lien'),
+    '155': ('lien_judgment',         70, 'Federal Tax Lien'),
+    '614': ('tax_delinquency',       55, 'Assessors Rollback Tax Lien'),
+    '012': ('death_affidavit',       85, 'Death Certificate'),
+    '007': ('affidavit',             40, 'Affidavit'),
+}
+def scrape_summit_recorder():
+    slug = 'summit-recorder-eagle'
+    log.info(f'[{slug}] starting')
+    B = 'https://property.summitcounty.org/eaglesoftware'
+    s = requests.Session(); s.headers['User-Agent'] = HEADERS_UA if 'HEADERS_UA' in globals() else 'Mozilla/5.0'
+    try:
+        r = s.get(f'{B}/web/login.jsp', timeout=45)
+        act = re.search(r'action="([^"]*loginPOST[^"]*)"', r.text).group(1).replace('../', '/')
+        s.post(f'{B}{act}', data={'submit': 'Public Login', 'guest': 'true'}, timeout=45)
+        s.get(f'{B}/eagleweb/docSearch.jsp', timeout=45)
+    except Exception as e:
+        log.error(f'[{slug}] login failed: {e}'); return 0
+    end = datetime.date.today(); start = end - datetime.timedelta(days=30)
+    data = [('RecordingDateIDStart', start.strftime('%m/%d/%Y')), ('RecordingDateIDEnd', end.strftime('%m/%d/%Y')),
+            ('docTypeTotal', '225'), ('NameIDSearchType', '1'), ('CreatedByIDSearchType', '1'), ('WaterMineNameIDSearchType', '1')]
+    data += [('__search_select', k) for k in SUMMIT_TYPES]
+    try:
+        r = s.post(f'{B}/eagleweb/docSearchPOST.jsp', data=data, timeout=90, allow_redirects=True)
+    except Exception as e:
+        log.error(f'[{slug}] search failed: {e}'); return 0
+    signals, seen = [], set()
+    pages = [r.text]
+    # Eagle Web pages results at 100/page: follow "next" links if present
+    for pg in range(2, 6):
+        m = re.search(r'href="([^"]*docSearchResults\.jsp[^"]*page=' + str(pg) + r'[^"]*)"', pages[-1])
+        if not m: break
+        try: pages.append(s.get(f'{B}/eagleweb/' + m.group(1).split('eagleweb/')[-1], timeout=60).text)
+        except Exception: break
+        time.sleep(1.2)
+    for page in pages:
+        for raw in re.findall(r'<tr[^>]*>(.*?)</tr>', page, re.S | re.I):
+            cells = [c.strip() for c in re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '|', raw))).split('|') if c.strip()]
+            if len(cells) < 6: continue
+            dt = next((c for c in cells if re.match(r'\d{1,2}/\d{1,2}/\d{4}', c)), None)
+            if not dt: continue
+            typ_label = cells[0]; docnum = next((c for c in cells if re.match(r'^\d{8}$', c)), None)
+            if not docnum or docnum in seen: continue
+            code = next((k for k, v in SUMMIT_TYPES.items() if v[2].lower() == typ_label.lower()), None)
+            if not code: continue
+            sig_type, score, _ = SUMMIT_TYPES[code]
+            def after(lbl):
+                if lbl in cells:
+                    i = cells.index(lbl); return cells[i + 1] if i + 1 < len(cells) else ''
+                return ''
+            grantor, grantee = after('From:'), after('To:')
+            parcel = next((c for c in cells if re.match(r'^[A-Z]{2,6}-[A-Z0-9-]+$', c)), None)
+            # the OWNER is the party the distress is against: the grantee on NOD/NTS
+            # (trustee → borrower), the grantee on a lien (claimant → owner).
+            owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency') else grantor
+            seen.add(docnum)
+            signals.append({
+                'source_slug': slug, 'signal_type': sig_type, 'score': score,
+                'county': 'Summit', 'city': None,
+                'raw_owner_name': clean_owner(owner) if owner else None,
+                'raw_address': f'{typ_label} — Doc #{docnum}',
+                'parcel_serial': parcel,
+                'raw_payload': json.dumps({'entry': docnum, 'koi': typ_label, 'recorded': dt,
+                                           'grantor': grantor, 'grantee': grantee, 'parcel': parcel,
+                                           'source': 'Summit County Eagle Web'}),
+            })
+    log.info(f'[{slug}] {len(signals)} signals across {len(set(x["signal_type"] for x in signals))} types')
+    return post_batch(signals)
+
 # ─── UNIFIED UTAH COUNTY RECORDER ─────────────────────────────────────────────
 # Utah County's server-side DocDesc filter is BROKEN — POSTing a document
 # description returns an unfiltered/empty result set. Four scrapers relying on it
@@ -1908,6 +1993,7 @@ SCRAPERS = [
     ('utah-deeds-of-trust',         scrape_deeds_of_trust),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
+    ('summit-recorder-eagle',       scrape_summit_recorder),
     # Fire marshal
     # LIR parcels
     # Extended AGRC parcel coverage (bonus counties)
