@@ -4,7 +4,7 @@ Fixes June 17 2026: DEED OF TRUST removed, WARN Act county map, FSBO Utah filter
 Commercial-grade: retry logic, source health monitoring,
 correct dedup, no broken scrapers, single __main__, no undefined refs.
 """
-import os, hashlib, logging, requests, re, json, time, datetime
+import os, hashlib, logging, requests, re, json, time, datetime, html
 
 # Real-time upgraded scrapers — HMDA 2024 live, SLCO recorder, AGRC parcels
 try:
