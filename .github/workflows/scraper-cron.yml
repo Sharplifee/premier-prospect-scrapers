@@ -14,6 +14,14 @@ on:
     - cron: '0 10 * * *'  # 4:00 AM MDT (summer)
     - cron: '0 11 * * *'  # 4:00 AM MST (winter)
 
+# One scraper run at a time. Two overlapping runs (manual dispatch during the
+# schedule, or the 10:00/11:00 crons on a slow day) double-insert (dedupe
+# absorbs it) but collide on the keepalive git push, which has produced false
+# 'failure' conclusions before. Queue the second run; never cancel the first.
+concurrency:
+  group: pp-scrape
+  cancel-in-progress: false
+
 permissions:
   contents: write
   actions: write
