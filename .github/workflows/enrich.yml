@@ -1,0 +1,45 @@
+name: Enrichment (nightly)
+# Background enrichment that walks the county recorder and assessor PER OWNER.
+# Kept OUT of the daily scraper run on purpose: it is 1-2 requests per owner
+# against county servers, so it runs slowly, throttled, and after the main run.
+on:
+  schedule:
+    - cron: '30 12 * * *'       # 12:30 UTC = 06:30 MDT, after the 10:00/11:00 UTC scraper runs
+  workflow_dispatch:
+    inputs:
+      hist_limit:   { description: 'owners to look up in the mortgage index', default: '55' }
+      parcel_limit: { description: 'parcels to fetch from the assessor',      default: '80' }
+
+concurrency: { group: pp-enrich, cancel-in-progress: false }
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      HIST_LIMIT:   ${{ github.event.inputs.hist_limit || '55' }}
+      PARCEL_LIMIT: ${{ github.event.inputs.parcel_limit || '80' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests
+
+      - name: Historical mortgage (oldest outstanding trust deed per owner)
+        run: timeout 20m python scrapers/historical_mortgage_enrichment.py || echo "mortgage step ended (timeout or error) — continuing"
+
+      - name: Assessor parcel intel (value, mailing address, absentee)
+        run: timeout 20m python scrapers/parcel_intel.py || echo "parcel step ended (timeout or error) — continuing"
+
+      # Enriched rows only reach the queue once convergence rolls them up.
+      # Without this the enrichment scripts re-select the same owners tomorrow.
+      - name: Recompute convergence + caches
+        run: |
+          H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
+          for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_kpi_cache; do
+            code=$(curl -s -o /tmp/r.txt -w "%{http_code}" -X POST "${H[@]}" "$SUPABASE_URL/rest/v1/rpc/$fn" -d '{}' --max-time 180)
+            echo "$fn -> $code $(head -c 40 /tmp/r.txt)"
+            [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
+          done
