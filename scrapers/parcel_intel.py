@@ -48,7 +48,59 @@ def fetch(serial):
     return {'parcel_serial':serial,'county':'Utah','market_value':total,'value_year':int(mv.group(1)) if mv else None,
             'property_address':prop or None,'mailing_address':mail or None,'is_absentee':absentee,'fetched_at':'now()'}
 
+def index_name(raw):
+    """Assessor name search wants 'LAST, FIRST' — strip suffixes and co-owners."""
+    if not raw: return None
+    n=raw.upper(); n=re.sub(r'\([^)]*\)',' ',n)
+    n=re.sub(r'\b(TEE|TRUSTEE|SUCTEE|PERREP|PER REP|DEC|ESTATE OF|ET AL|ETAL|JR|SR|II|III)\b',' ',n)
+    n=n.split('&')[0]; n=re.sub(r'[^A-Z, ]',' ',n); n=re.sub(r'\s+',' ',n).strip().strip(',').strip()
+    if ',' in n:
+        sur,_,rest=n.partition(','); n=f"{sur.strip()}, {rest.strip()}".strip().strip(',')
+    return n or None
+
+def norm_cmp(s):
+    return re.sub(r'[^A-Z]','',(s or '').upper())
+
+def resolve_parcels_by_name(limit):
+    """For high-conviction Utah owners with NO parcel on any signal, find their parcels
+    via the assessor owner-name search. EXACT-match only on the normalised name — an
+    under-match is safe, a mis-match puts an agent at a stranger's house."""
+    q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key,owner_display&contactable=is.true&resolved_flag=is.false"
+       f"&county=eq.Utah&order=conviction_score.desc&limit=400")
+    owners=requests.get(q,headers=H,timeout=30).json()
+    have=set(x['owner_key'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&owner_key=not.is.null",headers=H,timeout=30).json())
+    # owners whose signals already carry a parcel are handled by the parcel loop
+    with_parcel=set()
+    for i in range(0,len(owners),80):
+        ks=','.join('"'+o['entity_key'].replace('"','')+'"' for o in owners[i:i+80])
+        for r in requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=owner_key&is_legacy=eq.false&parcel_serial=not.is.null&owner_key=in.({requests.utils.quote(ks)})",headers=H,timeout=30).json():
+            with_parcel.add(r['owner_key'])
+    todo=[o for o in owners if o['entity_key'] not in have and o['entity_key'] not in with_parcel][:limit]
+    log.info(f'{len(todo)} owners to resolve by name')
+    n=0
+    for o in todo:
+        nm=index_name(o['owner_display'])
+        if not nm or ',' not in nm: continue
+        try:
+            r=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':nm,'av_valid':'...','Submit':' Search '},timeout=45)
+        except Exception as e: log.warning(f'  {nm[:30]} {type(e).__name__}'); time.sleep(3); continue
+        time.sleep(1.4)
+        hits=[]
+        for m in re.finditer(r'<tr[^>]*>(.*?)</tr>',r.text,re.S|re.I):
+            c=[re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>','',x))).strip() for x in re.findall(r'<td[^>]*>(.*?)</td>',m.group(1),re.S|re.I)]
+            if len(c)>=2 and re.match(r'^\d{2}:\d{3}:\d{4}$',c[1]) and norm_cmp(index_name(c[0]))==norm_cmp(nm):
+                hits.append(c[1])
+        if not hits: log.info(f'  {nm[:34]:36} no exact parcel match'); continue
+        for serial in sorted(set(hits))[:4]:
+            d=fetch(serial); time.sleep(1.4)
+            if not d or d['market_value'] is None: continue
+            d.pop('fetched_at'); d['owner_key']=o['entity_key']
+            w=requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+            if w.status_code<400: n+=1; log.info(f"  {nm[:30]:32} {serial} ${d['market_value']:,} {'ABSENTEE' if d['is_absentee'] else ''}")
+    log.info(f'resolved {n} parcels by name'); return n
+
 def main(limit=60):
+    resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
     # Parcels belonging to the HIGHEST-CONVICTION real owners first. Ordering by
     # raw signal score pulled a developer's row of identical lots to the front;
     # order by the owner's conviction and skip institutional rows instead.
