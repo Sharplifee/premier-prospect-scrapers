@@ -21,6 +21,7 @@ jobs:
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       HIST_LIMIT:   ${{ github.event.inputs.hist_limit || '55' }}
       PARCEL_LIMIT: ${{ github.event.inputs.parcel_limit || '80' }}
+      NAME_LIMIT: '60'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
