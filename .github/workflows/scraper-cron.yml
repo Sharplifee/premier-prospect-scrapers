@@ -8,11 +8,12 @@ on:
         required: false
         default: 'false'
   schedule:
-    # 4:00 AM Mountain Time daily
-    # MDT (Mar-Nov): 10:00 UTC | MST (Nov-Mar): 11:00 UTC
-    # Both listed — daily-skip logic in scraper prevents double-runs on transition days
-    - cron: '0 10 * * *'  # 4:00 AM MDT (summer)
-    - cron: '0 11 * * *'  # 4:00 AM MST (winter)
+    # Target ~4:00 AM Mountain. GitHub delays top-of-hour crons by HOURS under
+    # load — observed Sept 2026: '0 10' fired at 13:xx–16:xx every day for a
+    # week, never at 10:00. Off-peak minutes are dispatched far more promptly,
+    # and starting earlier absorbs whatever delay remains.
+    - cron: '23 9 * * *'   # ≈3:23 AM MDT / 2:23 AM MST
+    - cron: '23 10 * * *'  # second chance; the scraper's daily-skip makes it a no-op if the first ran
 
 # One scraper run at a time. Two overlapping runs (manual dispatch during the
 # schedule, or the 10:00/11:00 crons on a slow day) double-insert (dedupe
