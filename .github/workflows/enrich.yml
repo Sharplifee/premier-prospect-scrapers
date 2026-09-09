@@ -3,8 +3,12 @@ name: Enrichment (nightly)
 # Kept OUT of the daily scraper run on purpose: it is 1-2 requests per owner
 # against county servers, so it runs slowly, throttled, and after the main run.
 on:
-  schedule:
-    - cron: '30 12 * * *'       # 12:30 UTC = 06:30 MDT, after the 10:00/11:00 UTC scraper runs
+  # Chained to the scrape rather than a clock. GitHub fires scheduled crons
+  # hours late, so a fixed 12:30 was landing BEFORE the day's scrape. This
+  # runs when the scraper finishes, whenever that is.
+  workflow_run:
+    workflows: ["Premier Prospect Scrapers"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       hist_limit:   { description: 'owners to look up in the mortgage index', default: '55' }
@@ -14,6 +18,7 @@ concurrency: { group: pp-enrich, cancel-in-progress: false }
 
 jobs:
   enrich:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 55
     env:
