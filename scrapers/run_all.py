@@ -182,7 +182,8 @@ def apify_text(url, retries=2):
 
 # ── BATCH INSERT ──────────────────────────────────────────────────────────────
 ALLOWED_COLS = {'source_slug','raw_address','raw_owner_name','raw_phone','raw_url',
-                'raw_payload','signal_type','score','county','city','captured_at','dedupe_hash'}
+                'raw_payload','signal_type','score','county','city','captured_at','dedupe_hash',
+                'parcel_serial','tax_owed','tax_total','loan_amount','loan_date','lender_name','loan_released'}
 
 # Unified score scale: HOT=70-100, WARM=40-69, COOL=0-39
 def score_tier(score):
