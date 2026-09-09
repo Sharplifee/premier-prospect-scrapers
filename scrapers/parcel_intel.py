@@ -99,7 +99,54 @@ def resolve_parcels_by_name(limit):
             if w.status_code<400: n+=1; log.info(f"  {nm[:30]:32} {serial} ${d['market_value']:,} {'ABSENTEE' if d['is_absentee'] else ''}")
     log.info(f'resolved {n} parcels by name'); return n
 
+def obit_to_index(raw):
+    """'Roger Orvel Ladle' → 'LADLE, ROGER ORVEL'. Strips memorial prefixes and suffixes."""
+    n=re.sub(r'^\s*(IN LOVING MEMORY( OF)?|IN MEMORY OF|OBITUARY[:\-]?)\s*','',(raw or '').upper()).strip()
+    n=re.sub(r'\b(JR|SR|II|III|IV)\b\.?','',n); n=re.sub(r'[^A-Z ]',' ',n); n=re.sub(r'\s+',' ',n).strip()
+    parts=n.split(' ')
+    if len(parts)<2: return None
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+def obit_match(query, cand):
+    """Surname + first name exact; if both carry a middle, initials must agree."""
+    def split(s):
+        sur,_,rest=s.partition(','); toks=rest.strip().split()
+        return sur.strip(), (toks[0] if toks else ''), (toks[1][:1] if len(toks)>1 else '')
+    qs,qf,qm=split(query); cs,cf,cm=split(index_name(cand) or '')
+    return qs==cs and qf==cf and qf!='' and (not qm or not cm or qm==cm)
+
+def resolve_obituaries(limit):
+    """A deceased person confirmed as a property owner is an estate — one of the
+    strongest sell signals there is. Obituary rows sit at score 20 until matched."""
+    rows=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=id,raw_owner_name,owner_key&signal_type=eq.obituary&is_legacy=eq.false&score=lte.20&order=captured_at.desc&limit={limit}",headers=H,timeout=30).json()
+    log.info(f'{len(rows)} unmatched obituaries')
+    n=0
+    for r in rows:
+        q=obit_to_index(r['raw_owner_name'])
+        if not q: continue
+        try: s=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':q,'av_valid':'...','Submit':' Search '},timeout=45)
+        except Exception as e: log.warning(f'  {q[:30]} {type(e).__name__}'); time.sleep(3); continue
+        time.sleep(1.4)
+        hits=[]
+        for m in re.finditer(r'<tr[^>]*>(.*?)</tr>',s.text,re.S|re.I):
+            c=[re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>','',x))).strip() for x in re.findall(r'<td[^>]*>(.*?)</td>',m.group(1),re.S|re.I)]
+            if len(c)>=2 and re.match(r'^\d{2}:\d{3}:\d{4}$',c[1]) and obit_match(q,c[0]): hits.append((c[0],c[1]))
+        if not hits: log.info(f'  {q[:34]:36} no owner match'); continue
+        # promote the obituary: this person owned property → estate signal
+        serial=hits[0][1]
+        w=requests.patch(f"{SB}/rest/v1/pp_scraper_signals?id=eq.{r['id']}",json={'signal_type':'deceased_owner','score':85,'parcel_serial':serial,
+              'raw_address':f'Deceased owner — parcel {serial}'},headers={**H,'Prefer':'return=minimal'},timeout=30)
+        if w.status_code>=400: log.error(f'  {q[:30]} promote {w.status_code}'); continue
+        for name,ser in hits[:4]:
+            d=fetch(ser); time.sleep(1.4)
+            if not d or d['market_value'] is None: continue
+            d.pop('fetched_at'); d['owner_key']=r['owner_key']
+            requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        n+=1; log.info(f"  {q[:34]:36} ESTATE — {len(hits)} parcel(s), {hits[0][1]} ({hits[0][0][:26]})")
+    log.info(f'promoted {n} obituaries to deceased_owner'); return n
+
 def main(limit=60):
+    resolve_obituaries(int(os.environ.get('OBIT_LIMIT','40')))
     resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
     # Parcels belonging to the HIGHEST-CONVICTION real owners first. Ordering by
     # raw signal score pulled a developer's row of identical lots to the front;
