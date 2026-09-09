@@ -623,6 +623,11 @@ WASATCH_TYPES = {
     'SPECIAL WARRANTY DEED':           ('deed_transfer',         55),
     'QUIT CLAIM DEED':                 ('family_transfer',       50),
     'TRUST DEED':                      ('deed_of_trust',         35),
+    # intent / resolution instruments surfaced by a 90-day type sweep (Sept 2026)
+    'NOTICE OF INTEREST':              ('notice_of_interest',    45),   # a party asserts a claim or contract on the parcel
+    'MEMORANDUM OF OPTION AGRMNT':     ('lease_option',          60),   # rare (1 / 90d) but unambiguous
+    'NOTICE OPEN BUILDING PERMIT':     ('code_violation',        50),   # unfinished work on the property
+    'RELEASE OF LIS PENDENS':          ('lis_pendens_release',   25),   # litigation cleared — resolution, not distress
 }
 def scrape_wasatch_recorder():
     slug = 'wasatch-recorder-onbase'
