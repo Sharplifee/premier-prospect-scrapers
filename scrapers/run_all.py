@@ -520,6 +520,82 @@ def scrape_deeds_of_trust():
 
 
 
+
+# ─── UTAH COURT CALENDARS (free, statewide, updated weekdays 05:30) ─────────
+# legacy.utcourts.gov/cal/search.php is server-rendered. There is no "list all"
+# mode, but the judge-name search is a SUBSTRING match, so a sweep of common
+# two-letter substrings enumerates every judge's calendar without a roster.
+# Verified Sept 2026: 15 substrings → 3,122 distinct hearings at Provo District.
+# Each hearing carries: "<PARTIES>. Case #YYTTNNNNN, m/d/yyyy h:mm AM". The TT
+# code is the case type. Only property-relevant types are kept:
+#   44 / 64  domestic ("A and B" / "A vs. B")        → divorce_filing
+#   34       probate / trusts ("IN THE MATTER OF …")  → probate_filing
+#   94       debt collection (creditor vs. person)    → creditor_suit
+#   04       civil — kept ONLY when a lender/HOA/servicer is plaintiff or the
+#            hearing is an eviction (unlawful detainer)  → civil_property
+# Criminal (14/54) is dropped. Parties who are not natural persons are dropped.
+COURT_LOCS = {'2550D': ('Utah', 'Provo District'), '2140D': ('Utah', 'American Fork District'),
+              '3150D': ('Salt Lake', 'Salt Lake District'), '3170D': ('Salt Lake', 'West Jordan District'),
+              '4020D': ('Summit', 'Silver Summit District'), '4400D': ('Wasatch', 'Heber District')}
+COURT_SUBSTRINGS = ['an','en','on','er','ar','in','el','or','ll','ul','ne','st','ro','le','ha','ma','be','al','il','ol']
+LENDER_RX = re.compile(r'\b(BANK|MORTGAGE|LENDING|LOAN|FINANCIAL|CREDIT UNION|SERVICING|TRUSTEE|HOA|HOMEOWNERS|ASSOCIATION|FUNDING|CAPITAL|LLC|INC)\b', re.I)
+def _court_owner(parties, code):
+    """Return the natural-person party the filing is against, or None."""
+    p = html.unescape(parties).strip()
+    if code in ('44', '64'):                     # divorce: both are people; take the first
+        a = re.split(r'\s+(?:and|vs\.?)\s+', p, 1, flags=re.I)
+        return a[0].strip()
+    if code == '34':                             # probate: estate / trust name
+        m = re.search(r'ESTATE OF\s+(.+?)(?:,|$)', p, re.I)
+        return m.group(1).strip() if m else None  # trusts (no named decedent) are skipped
+    if code in ('94', '04'):                     # creditor vs person: defendant is the owner
+        a = re.split(r'\s+vs\.?\s+', p, 1, flags=re.I)
+        if len(a) < 2: return None
+        plaintiff, defendant = a[0], a[1]
+        if code == '04' and not (LENDER_RX.search(plaintiff) or 'UNLAWFUL DETAINER' in p.upper()): return None
+        if LENDER_RX.search(defendant) or 'STATE OF' in defendant.upper(): return None
+        return re.sub(r'\s+et al\.?$', '', defendant, flags=re.I).strip()
+    return None
+
+def scrape_court_calendars():
+    slug = 'utah-court-calendars'
+    log.info(f'[{slug}] starting')
+    s = requests.Session(); s.headers['User-Agent'] = 'Mozilla/5.0'
+    seen, signals = set(), []
+    rx = re.compile(r'title="Hearing location[^"]*?More Info\.\s*(.*?)\. Case #(\d{9}), ([\d/]+ [\d:]+ [AP]M)"')
+    for loc, (county, courthouse) in COURT_LOCS.items():
+        for q in COURT_SUBSTRINGS:
+            try:
+                r = s.get('https://legacy.utcourts.gov/cal/search.php',
+                          params={'t': 'j', 'j': q, 'd': 'all', 'loc': loc}, timeout=90)
+            except Exception as e:
+                log.warning(f'[{slug}] {loc} {q}: {type(e).__name__}'); continue
+            for parties, case, when in rx.findall(r.text):
+                if case in seen: continue
+                code = case[2:4]
+                if code not in ('44', '64', '34', '94', '04'): continue
+                owner = _court_owner(parties, code)
+                if not owner or pp_is_inst_local(owner): continue
+                seen.add(case)
+                sig, score = {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
+                              '34': ('probate_filing', 84), '94': ('creditor_suit', 62),
+                              '04': ('civil_property', 66)}[code]
+                signals.append({
+                    'source_slug': slug, 'signal_type': sig, 'score': score,
+                    'county': county, 'city': None,
+                    'raw_owner_name': clean_owner(owner),
+                    'raw_address': f'{sig.replace("_", " ").title()} — Case #{case}',
+                    'raw_payload': json.dumps({'entry': case, 'koi': f'COURT-{code}', 'case_type': code,
+                                               'parties': html.unescape(parties), 'hearing': when,
+                                               'courthouse': courthouse, 'source': 'Utah Court Calendar'}),
+                })
+            time.sleep(0.8)
+    log.info(f'[{slug}] {len(signals)} signals across {len(set(x["signal_type"] for x in signals))} types from {len(COURT_LOCS)} courthouses')
+    return post_batch(signals)
+
+def pp_is_inst_local(name):
+    return bool(LENDER_RX.search(name)) or bool(re.search(r'\b(CITY|COUNTY|STATE OF|DEPARTMENT|SCHOOL|HOSPITAL|TRUST\b)', name, re.I))
+
 # ─── WASATCH COUNTY (Heber) — OnBase public-access recorder ─────────────────
 # docs.wasatch.utah.gov/PublicAccess. The portal's config claims no date search
 # but the API keyword 287 ("Date") accepts >= and <= operators. Verified live
@@ -2065,6 +2141,7 @@ SCRAPERS = [
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
     ('summit-recorder-eagle',       scrape_summit_recorder),
     ('wasatch-recorder-onbase',     scrape_wasatch_recorder),
+    ('utah-court-calendars',        scrape_court_calendars),
     # Fire marshal
     # LIR parcels
     # Extended AGRC parcel coverage (bonus counties)
