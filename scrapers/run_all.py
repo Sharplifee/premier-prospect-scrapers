@@ -518,6 +518,75 @@ def scrape_deeds_of_trust():
     return post_batch(signals)
 
 
+
+# ─── WASATCH COUNTY (Heber) — OnBase public-access recorder ─────────────────
+# docs.wasatch.utah.gov/PublicAccess. The portal's config claims no date search
+# but the API keyword 287 ("Date") accepts >= and <= operators. Verified live
+# Sept 2026: 1,388 documents in 30 days. Each result's Name is one line:
+#   "578266 - Date: 8/26/2026 - Grantor: X - Grantee: Y - Doc Type: TRUST DEED - Book and Page: …"
+# POST api/CustomQuery/KeywordSearch {QueryID:114, Keywords:[{ID:287,Value,op:>=},{ID:287,Value,op:<=}], QueryLimit}
+WASATCH_TYPES = {
+    'NOTICE OF DEFAULT':               ('nod',                   88),
+    'NOTICE OF TRUSTEE':               ('nts',                   99),   # prefix match
+    'SUBSTITUTION OF TRUSTEE':         ('trustee_substitution',  88),   # exact only; "& RECONVEYA" variant is a payoff
+    'AFFIDAVIT OF SUCCESSOR TRUSTEE':  ('trustee_substitution',  88),
+    'LIS PENDENS':                     ('lis_pendens',           90),
+    'NOTICE OF LIEN':                  ('lien_judgment',         68),
+    'NOTICE OF FEDERAL TAX LIEN':      ('lien_judgment',         70),
+    'NOTICE OF ROLL BACK TAX':         ('tax_delinquency',       55),
+    'DEATH CERTIFICATE':               ('death_affidavit',       85),
+    'AFFIDAVIT OF DEATH':              ('death_affidavit',       85),
+    'NOTICE NOT TO OCCUPY':            ('code_violation',        60),   # condition distress
+    'TRUSTEE\'S DEED':                 ('trustee_deed',          92),   # kill signal
+    'WARRANTY DEED':                   ('deed_transfer',         55),
+    'SPECIAL WARRANTY DEED':           ('deed_transfer',         55),
+    'QUIT CLAIM DEED':                 ('family_transfer',       50),
+    'TRUST DEED':                      ('deed_of_trust',         35),
+}
+def scrape_wasatch_recorder():
+    slug = 'wasatch-recorder-onbase'
+    log.info(f'[{slug}] starting')
+    s = requests.Session()
+    s.headers.update({'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Content-Type': 'application/json',
+                      'Origin': 'https://docs.wasatch.utah.gov',
+                      'Referer': 'https://docs.wasatch.utah.gov/PublicAccess/sample-cq/index.html'})
+    end = datetime.date.today(); start = end - datetime.timedelta(days=30)
+    body = {"QueryID": 114, "Keywords": [
+        {"ID": 287, "Value": start.strftime('%m/%d/%Y'), "KeywordOperator": ">="},
+        {"ID": 287, "Value": end.strftime('%m/%d/%Y'), "KeywordOperator": "<="}], "QueryLimit": 3000}
+    try:
+        r = s.post('https://docs.wasatch.utah.gov/PublicAccess/api/CustomQuery/KeywordSearch', json=body, timeout=180)
+        rows = r.json().get('Data', [])
+    except Exception as e:
+        log.error(f'[{slug}] search failed: {e}'); return 0
+    signals, seen = [], set()
+    for x in rows:
+        line = re.sub(r'<[^>]+>', '', html.unescape(x.get('Name', '')))
+        m = re.match(r'\s*(\d+)\s*-\s*Date:\s*([\d/]+)\s*-\s*Grantor:\s*(.*?)\s*-\s*Grantee:\s*(.*?)\s*-\s*Doc Type:\s*(.*?)\s*(?:-\s*Book and Page.*)?$', line)
+        if not m: continue
+        entry, dt, grantor, grantee, doctype = m.groups()
+        if entry in seen: continue
+        doctype = doctype.strip().upper()
+        if 'RECONVEY' in doctype and 'SUBSTITUTION' in doctype: continue   # substitution + reconveyance = payoff
+        hit = None
+        for k, v in WASATCH_TYPES.items():
+            if doctype == k or (k == 'NOTICE OF TRUSTEE' and doctype.startswith(k)): hit = v; break
+        if not hit: continue
+        sig_type, score = hit
+        # the party under pressure: grantee on lender-originated instruments, grantor otherwise
+        owner = grantee if sig_type in ('nod', 'nts', 'trustee_substitution', 'lien_judgment', 'tax_delinquency', 'code_violation') else grantor
+        seen.add(entry)
+        signals.append({
+            'source_slug': slug, 'signal_type': sig_type, 'score': score,
+            'county': 'Wasatch', 'city': None,
+            'raw_owner_name': clean_owner(owner) if owner else None,
+            'raw_address': f'{doctype.title()} — Entry #{entry}',
+            'raw_payload': json.dumps({'entry': entry, 'koi': doctype, 'recorded': dt,
+                                       'grantor': grantor, 'grantee': grantee, 'source': 'Wasatch County OnBase'}),
+        })
+    log.info(f'[{slug}] {len(signals)} signals across {len(set(x["signal_type"] for x in signals))} types from {len(rows)} docs')
+    return post_batch(signals)
+
 # ─── SUMMIT COUNTY (Park City) — Eagle Web recorder ────────────────────────
 # Summit runs Tyler Eagle Web with a PUBLIC guest login and a full document
 # search: 225 document types, date range, grantor/grantee, parcel. Verified live
@@ -1994,6 +2063,7 @@ SCRAPERS = [
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
     ('summit-recorder-eagle',       scrape_summit_recorder),
+    ('wasatch-recorder-onbase',     scrape_wasatch_recorder),
     # Fire marshal
     # LIR parcels
     # Extended AGRC parcel coverage (bonus counties)
