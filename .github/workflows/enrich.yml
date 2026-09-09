@@ -27,6 +27,7 @@ jobs:
       HIST_LIMIT:   ${{ github.event.inputs.hist_limit || '55' }}
       PARCEL_LIMIT: ${{ github.event.inputs.parcel_limit || '80' }}
       NAME_LIMIT: '60'
+      OBIT_LIMIT: '40'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
