@@ -542,7 +542,7 @@ LENDER_RX = re.compile(r'\b(BANK|MORTGAGE|LENDING|LOAN|FINANCIAL|CREDIT UNION|SE
 def _court_owner(parties, code):
     """Return the natural-person party the filing is against, or None."""
     p = html.unescape(parties).strip()
-    if code in ('44', '64'):                     # divorce: both are people; take the first
+    if code in ('44', '64'):                     # domestic (type 4 or 6): both are people; take the first
         a = re.split(r'\s+(?:and|vs\.?)\s+', p, 1, flags=re.I)
         return a[0].strip()
     if code == '34':                             # probate: estate / trust name
@@ -572,8 +572,11 @@ def scrape_court_calendars():
                 log.warning(f'[{slug}] {loc} {q}: {type(e).__name__}'); continue
             for parties, case, when in rx.findall(r.text):
                 if case in seen: continue
-                code = case[2:4]
-                if code not in ('44', '64', '34', '94', '04'): continue
+                # Utah case numbers are YYTDNNNNN: T = case type, D = district code
+                # (Provo's Fourth District shows 4, Salt Lake's Third shows 9). Match on T.
+                tcode = case[2]
+                if tcode not in ('4', '6', '3', '9', '0'): continue
+                code = tcode + '4'   # normalise to the Fourth-District spelling the mapper expects
                 owner = _court_owner(parties, code)
                 if not owner or pp_is_inst_local(owner): continue
                 seen.add(case)
