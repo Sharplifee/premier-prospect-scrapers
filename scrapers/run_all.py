@@ -534,9 +534,9 @@ def scrape_deeds_of_trust():
 #   04       civil — kept ONLY when a lender/HOA/servicer is plaintiff or the
 #            hearing is an eviction (unlawful detainer)  → civil_property
 # Criminal (14/54) is dropped. Parties who are not natural persons are dropped.
-COURT_LOCS = {'2550D': ('Utah', 'Provo District'), '2140D': ('Utah', 'American Fork District'),
-              '3150D': ('Salt Lake', 'Salt Lake District'), '3170D': ('Salt Lake', 'West Jordan District'),
-              '4020D': ('Summit', 'Silver Summit District'), '4400D': ('Wasatch', 'Heber District')}
+COURT_LOCS = {'2550D': ('Utah', 'Provo District'), '2502D': ('Utah', 'American Fork District'),
+              '1868D': ('Salt Lake', 'Salt Lake County District'), '1873D': ('Salt Lake', 'West Jordan District'),
+              '2218D': ('Summit', 'Summit District'), '2606D': ('Wasatch', 'Heber District')}
 COURT_SUBSTRINGS = ['an','en','on','er','ar','in','el','or','ll','ul','ne','st','ro','le','ha','ma','be','al','il','ol']
 LENDER_RX = re.compile(r'\b(BANK|MORTGAGE|LENDING|LOAN|FINANCIAL|CREDIT UNION|SERVICING|TRUSTEE|HOA|HOMEOWNERS|ASSOCIATION|FUNDING|CAPITAL|LLC|INC)\b', re.I)
 def _court_owner(parties, code):
@@ -594,7 +594,8 @@ def scrape_court_calendars():
     return post_batch(signals)
 
 def pp_is_inst_local(name):
-    return bool(LENDER_RX.search(name)) or bool(re.search(r'\b(CITY|COUNTY|STATE OF|DEPARTMENT|SCHOOL|HOSPITAL|TRUST\b)', name, re.I))
+    return bool(LENDER_RX.search(name)) or bool(re.search(
+        r'\b(CITY|COUNTY|STATE OF|DEPARTMENT|DEPT|DIVISION|OFFICE|SERVICES?|RECOVERY|AGENCY|BUREAU|COMMISSION|SCHOOL|HOSPITAL|CLINIC|UNIVERSITY|CHURCH|TRUST|CORP|CORPORATION|COMPANY|CO\b|LTD|LP|GROUP|PROPERTIES|HOLDINGS|INVESTMENTS|ENTERPRISES|PARTNERS)\b', name, re.I))
 
 # ─── WASATCH COUNTY (Heber) — OnBase public-access recorder ─────────────────
 # docs.wasatch.utah.gov/PublicAccess. The portal's config claims no date search
