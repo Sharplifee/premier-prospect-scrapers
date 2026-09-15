@@ -29,6 +29,7 @@ jobs:
       NAME_LIMIT: '60'
       OBIT_LIMIT: '40'
       DIVORCE_LIMIT: '60'
+      BUYER_LIMIT: '30'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
