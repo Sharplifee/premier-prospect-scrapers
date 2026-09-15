@@ -30,6 +30,10 @@ jobs:
       OBIT_LIMIT: '40'
       DIVORCE_LIMIT: '60'
       BUYER_LIMIT: '30'
+      TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+      TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
+      TWILIO_A2P_CAMPAIGN_SID: ${{ secrets.TWILIO_A2P_CAMPAIGN_SID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -41,6 +45,9 @@ jobs:
 
       - name: Assessor parcel intel (value, mailing address, absentee)
         run: timeout 20m python scrapers/parcel_intel.py || echo "parcel step ended (timeout or error) — continuing"
+
+      - name: Outreach (SMS sequence — gated on carrier campaign approval)
+        run: timeout 10m python scrapers/outreach.py || echo "outreach step ended — continuing"
 
       # Enriched rows only reach the queue once convergence rolls them up.
       # Without this the enrichment scripts re-select the same owners tomorrow.
