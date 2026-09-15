@@ -145,7 +145,45 @@ def resolve_obituaries(limit):
         n+=1; log.info(f"  {q[:34]:36} ESTATE — {len(hits)} parcel(s), {hits[0][1]} ({hits[0][0][:26]})")
     log.info(f'promoted {n} obituaries to deceased_owner'); return n
 
+def resolve_divorces(limit):
+    """A divorcing couple who OWN a home is a listing; one who rents is noise. Run
+    both spouses through the assessor. A hit on either promotes the filing to
+    divorce_homeowner (88) with the parcel attached; both on the same parcel is
+    the marital home (household=true). Filing year comes from the case number."""
+    rows=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=id,raw_owner_name,owner_key,raw_payload&signal_type=eq.divorce_filing&county=eq.Utah&is_legacy=eq.false&parcel_serial=is.null&order=captured_at.desc&limit={limit}",headers=H,timeout=30).json()
+    log.info(f'{len(rows)} unmatched Utah County divorce filings')
+    n=0
+    for r in rows:
+        pl=r['raw_payload']; pl=json.loads(pl) if isinstance(pl,str) else pl
+        if isinstance(pl,str): pl=json.loads(pl)
+        parties=re.split(r'\s+(?:and|vs\.?)\s+',pl.get('parties',''),flags=re.I)
+        spouses=[obit_to_index(re.sub(r'\s+et al\.?$','',s,flags=re.I)) for s in parties[:2]]
+        spouses=[s for s in spouses if s]
+        if not spouses: continue
+        hits={}   # serial -> set(spouse index)
+        for si,q in enumerate(spouses):
+            try: s=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':q,'av_valid':'...','Submit':' Search '},timeout=45)
+            except Exception as e: log.warning(f'  {q[:28]} {type(e).__name__}'); time.sleep(3); continue
+            time.sleep(1.3)
+            for m in re.finditer(r'<tr[^>]*>(.*?)</tr>',s.text,re.S|re.I):
+                c=[re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>','',x))).strip() for x in re.findall(r'<td[^>]*>(.*?)</td>',m.group(1),re.S|re.I)]
+                if len(c)>=2 and re.match(r'^\d{2}:\d{3}:\d{4}$',c[1]) and obit_match(q,c[0]): hits.setdefault(c[1],set()).add(si)
+        if not hits: log.info(f'  {spouses[0][:30]:32} renters / no owner match'); continue
+        # prefer a parcel both spouses appear on
+        serial=next((k for k,v in hits.items() if len(v)>=2), None) or sorted(hits)[0]
+        household = len(hits.get(serial,()))>=2
+        case=str(pl.get('entry','')); filed_year = 2000+int(case[:2]) if case[:2].isdigit() else None
+        pl.update({'parcel':serial,'household':household,'filed_year':filed_year,'spouses_matched':len({i for v in hits.values() for i in v})})
+        w=requests.patch(f"{SB}/rest/v1/pp_scraper_signals?id=eq.{r['id']}",json={'signal_type':'divorce_homeowner','score':88 if household else 84,'parcel_serial':serial,
+              'raw_address':f'Divorce — homeowner{" (marital home)" if household else ""} — parcel {serial}','raw_payload':json.dumps(pl)},headers={**H,'Prefer':'return=minimal'},timeout=30)
+        if w.status_code>=400: log.error(f'  {spouses[0][:28]} promote {w.status_code} {w.text[:80]}'); continue
+        d=fetch(serial); time.sleep(1.3)
+        if d and d['market_value']: d.pop('fetched_at'); d['owner_key']=r['owner_key']; requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        n+=1; log.info(f"  {spouses[0][:30]:32} HOMEOWNER{' · marital home' if household else ''} {serial} filed {filed_year}{' $'+format(d['market_value'],',') if d and d['market_value'] else ''}")
+    log.info(f'promoted {n} divorce filings to divorce_homeowner'); return n
+
 def main(limit=60):
+    resolve_divorces(int(os.environ.get('DIVORCE_LIMIT','40')))
     resolve_obituaries(int(os.environ.get('OBIT_LIMIT','40')))
     resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
     # Parcels belonging to the HIGHEST-CONVICTION real owners first. Ordering by
