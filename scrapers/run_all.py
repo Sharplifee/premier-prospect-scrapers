@@ -583,6 +583,12 @@ def scrape_court_calendars():
                 sig, score = {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
                               '34': ('probate_filing', 84), '94': ('creditor_suit', 62),
                               '04': ('civil_property', 66)}[code]
+                # case age decay: YY prefix is the filing year. A 2012 divorce still on
+                # the calendar is enforcement, not a household splitting.
+                try:
+                    age = datetime.date.today().year - (2000 + int(case[:2]))
+                    score = round(score * (1.0 if age <= 1 else 0.75 if age <= 3 else 0.40))
+                except ValueError: pass
                 signals.append({
                     'source_slug': slug, 'signal_type': sig, 'score': score,
                     'county': county, 'city': None,
