@@ -2245,6 +2245,17 @@ if __name__ == '__main__':
     except Exception as e:
         log.error(f'  Convergence failed: {e}')
 
+    # Cross-county identity: the same full name with distress in two counties is
+    # one person the county-scoped keys cannot see. Annotates the entity and adds
+    # a modest bonus only on full-name (first + middle + last) matches; two-token
+    # names get the note with a "verify same person" caveat and no bonus.
+    try:
+        r_xc = requests.post(f"{SUPABASE_URL}/rest/v1/rpc/pp_compute_cross_county", headers=RPC_HEADERS, json={}, timeout=180)
+        log.info(f'  Cross-county: {r_xc.status_code} names={r_xc.text[:20]}')
+        if r_xc.status_code >= 400: log.error(f'  Cross-county FAILED: {r_xc.text[:250]}')
+    except Exception as e:
+        log.error(f'  Cross-county failed: {e}')
+
     # Buyer intelligence: the grantee on a recorded warranty deed is a PROVEN
     # buyer — someone who completed a purchase, with an entry number anyone can
     # verify. Repeat grantees are active acquirers. Must run after convergence
