@@ -537,6 +537,16 @@ def scrape_deeds_of_trust():
 COURT_LOCS = {'2550D': ('Utah', 'Provo District'), '2502D': ('Utah', 'American Fork District'),
               '1868D': ('Salt Lake', 'Salt Lake County District'), '1873D': ('Salt Lake', 'West Jordan District'),
               '2218D': ('Summit', 'Summit District'), '2606D': ('Wasatch', 'Heber District')}
+# case type name → (signal, base score, which party is the lead)
+COURT_TYPES = {
+    'Divorce/Annulment':      ('divorce_filing',    82, 'first'),
+    'Estate Personal Rep':    ('probate_filing',    84, 'estate'),
+    'Guardian-Adult':         ('guardianship',      60, 'first'),     # an adult under guardianship: the home often sells
+    'Debt Collection':        ('creditor_suit',     62, 'defendant'),
+    'Contracts':              ('civil_property',    66, 'defendant'), # kept only when a lender/HOA is plaintiff
+    'Eviction':               ('eviction_landlord', 58, 'plaintiff'), # the LANDLORD is the lead
+    # dropped on purpose: Custody and Support, Paternity, Protective Orders, Guardian-Minor, Miscellaneous, criminal
+}
 COURT_SUBSTRINGS = ['an','en','on','er','ar','in','el','or','ll','ul','ne','st','ro','le','ha','ma','be','al','il','ol']
 LENDER_RX = re.compile(r'\b(BANK|MORTGAGE|LENDING|LOAN|FINANCIAL|CREDIT UNION|SERVICING|TRUSTEE|HOA|HOMEOWNERS|ASSOCIATION|FUNDING|CAPITAL|LLC|INC)\b', re.I)
 def _court_owner(parties, code):
@@ -563,8 +573,10 @@ def scrape_court_calendars():
     s = requests.Session(); s.headers['User-Agent'] = 'Mozilla/5.0'
     seen, signals = set(), []
     rx = re.compile(r'title="Hearing location[^"]*?More Info\.\s*(.*?)\. Case #(\d{9}), ([\d/]+ [\d:]+ [AP]M)"')
-    # hearing type is free text after the courtroom line: <hr class="sep" />JUDGE<br>ROOM<br>TYPE</div>
-    rx_type = re.compile(r'<hr class="sep" />[^<]*<br>[^<]*<br>([^<]{3,60})</div>')
+    # the calendar prints the CASE TYPE NAME under each hearing — far more reliable
+    # than inferring from the case-number digit (which lumps custody, paternity and
+    # protective orders in with divorce)
+    rx_case = re.compile(r'<div class="case">\s*Case #\s*(\d{9})<br>\s*([^<]{2,60}?)\s*<br>', re.S)
     for loc, (county, courthouse) in COURT_LOCS.items():
         for q in COURT_SUBSTRINGS:
             try:
@@ -572,34 +584,35 @@ def scrape_court_calendars():
                           params={'t': 'j', 'j': q, 'd': 'all', 'loc': loc}, timeout=90)
             except Exception as e:
                 log.warning(f'[{slug}] {loc} {q}: {type(e).__name__}'); continue
-            titles = rx.findall(r.text); htypes = rx_type.findall(r.text)
-            for idx, (parties, case, when) in enumerate(titles):
+            case_types = dict(rx_case.findall(r.text))
+            for parties, case, when in rx.findall(r.text):
                 if case in seen: continue
-                htype = html.unescape(htypes[idx]).strip().upper() if idx < len(htypes) else ''
-                # Utah case numbers are YYTDNNNNN: T = case type, D = district code
-                # (Provo's Fourth District shows 4, Salt Lake's Third shows 9). Match on T.
-                tcode = case[2]
-                if tcode not in ('4', '6', '3', '9', '0'): continue
-                code = tcode + '4'   # normalise to the Fourth-District spelling the mapper expects
-                is_evict = tcode == '0' and re.search(r'EVICT|OCCUPANCY|UNLAWFUL DET|POSSESSION', htype) is not None
-                if is_evict:
-                    # plaintiff = landlord. A natural-person landlord with a problem tenant sells rentals.
+                ctype = case_types.get(case, '').strip()
+                sig, score, side = COURT_TYPES.get(ctype, (None, 0, None))
+                if not sig: continue
+                if sig == 'civil_property':
                     a = re.split(r'\s+vs\.?\s+', html.unescape(parties), 1, flags=re.I)
-                    owner = re.sub(r'\s+et al\.?$', '', a[0], flags=re.I).strip() if len(a) == 2 else None
-                else:
-                    owner = _court_owner(parties, code)
+                    if len(a) < 2 or not LENDER_RX.search(a[0]): continue     # only lender / HOA plaintiffs
+                code = case[2] + '4'
+                a = re.split(r'\s+(?:and|vs\.?)\s+', html.unescape(parties), 1, flags=re.I)
+                if side == 'plaintiff':   owner = re.sub(r'\s+et al\.?$', '', a[0], flags=re.I).strip()
+                elif side == 'defendant': owner = re.sub(r'\s+et al\.?$', '', a[1], flags=re.I).strip() if len(a) > 1 else None
+                elif side == 'estate':
+                    m = re.search(r'ESTATE OF\s+(.+?)(?:,|$)', html.unescape(parties), re.I); owner = m.group(1).strip() if m else None
+                else: owner = a[0].strip()
                 if not owner or pp_is_inst_local(owner): continue
+                try:
+                    age = datetime.date.today().year - (2000 + int(case[:2]))
+                    score = round(score * (1.0 if age <= 1 else 0.75 if age <= 3 else 0.40))
+                except ValueError: pass
                 seen.add(case)
-                sig, score = ('eviction_landlord', 58) if is_evict else {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
-                              '34': ('probate_filing', 84), '94': ('creditor_suit', 62),
-                              '04': ('civil_property', 66)}[code]
                 signals.append({
                     'source_slug': slug, 'signal_type': sig, 'score': score,
                     'county': county, 'city': None,
                     'raw_owner_name': clean_owner(owner),
                     'raw_address': f'{sig.replace("_", " ").title()} — Case #{case}',
                     'raw_payload': json.dumps({'entry': case, 'koi': f'COURT-{code}', 'case_type': code,
-                                               'parties': html.unescape(parties), 'hearing': when, 'hearing_type': htype,
+                                               'parties': html.unescape(parties), 'hearing': when, 'case_type': ctype,
                                                'courthouse': courthouse, 'source': 'Utah Court Calendar'}),
                 })
             time.sleep(0.8)
