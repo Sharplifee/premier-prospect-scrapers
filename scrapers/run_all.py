@@ -545,6 +545,9 @@ COURT_TYPES = {
     'Debt Collection':        ('creditor_suit',     62, 'defendant'),
     'Contracts':              ('civil_property',    66, 'defendant'), # kept only when a lender/HOA is plaintiff
     'Eviction':               ('eviction_landlord', 58, 'plaintiff'), # the LANDLORD is the lead
+    'Lien/Mortgage Fcls':     ('judicial_foreclosure', 90, 'defendant'), # a lender suing to foreclose
+    'Temporary Separation':   ('divorce_filing',    82, 'first'),
+    'Common Law Marriage':    ('divorce_filing',    82, 'first'),
     # dropped on purpose: Custody and Support, Paternity, Protective Orders, Guardian-Minor, Miscellaneous, criminal
 }
 COURT_SUBSTRINGS = ['an','en','on','er','ar','in','el','or','ll','ul','ne','st','ro','le','ha','ma','be','al','il','ol']
