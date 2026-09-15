@@ -182,7 +182,38 @@ def resolve_divorces(limit):
         n+=1; log.info(f"  {spouses[0][:30]:32} HOMEOWNER{' · marital home' if household else ''} {serial} filed {filed_year}{' $'+format(d['market_value'],',') if d and d['market_value'] else ''}")
     log.info(f'promoted {n} divorce filings to divorce_homeowner'); return n
 
+def resolve_buyer_parcels(limit):
+    """What does this buyer actually own? Their parcels' assessed values define the
+    price band they buy in — the basis for matching a seller to buyers who have
+    already closed at that number. Utah County natural persons, exact-match only."""
+    rows=requests.get(f"{SB}/rest/v1/pp_buyer_intel?select=buyer_key,buyer_display&is_entity=is.false&counties=cs.{{Utah}}&parcels_known=is.null&order=buyer_score.desc&limit={limit}",headers=H,timeout=30).json()
+    log.info(f'{len(rows)} Utah County buyers to resolve')
+    n=0
+    for r in rows:
+        q=index_name(r['buyer_display'])
+        if not q or ',' not in q: requests.patch(f"{SB}/rest/v1/pp_buyer_intel?buyer_key=eq.{requests.utils.quote(r['buyer_key'])}",json={'parcels_known':0},headers={**H,'Prefer':'return=minimal'},timeout=30); continue
+        try: s=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':q,'av_valid':'...','Submit':' Search '},timeout=45)
+        except Exception as e: log.warning(f'  {q[:28]} {type(e).__name__}'); time.sleep(3); continue
+        time.sleep(1.3)
+        serials=sorted({c[1] for m in re.finditer(r'<tr[^>]*>(.*?)</tr>',s.text,re.S|re.I)
+                        for c in [[re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>','',x))).strip() for x in re.findall(r'<td[^>]*>(.*?)</td>',m.group(1),re.S|re.I)]]
+                        if len(c)>=2 and re.match(r'^\d{2}:\d{3}:\d{4}$',c[1]) and norm_cmp(index_name(c[0]))==norm_cmp(q)})[:6]
+        vals=[]
+        for serial in serials:
+            d=fetch(serial); time.sleep(1.3)
+            if not d or not d['market_value'] or d['market_value']<20000: continue
+            d.pop('fetched_at'); d['buyer_key']=r['buyer_key']
+            requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+            vals.append(d['market_value'])
+        body={'parcels_known':len(vals)}
+        if vals: vals.sort(); body.update({'price_band_low':vals[0],'price_band_high':vals[-1]})
+        requests.patch(f"{SB}/rest/v1/pp_buyer_intel?buyer_key=eq.{requests.utils.quote(r['buyer_key'])}",json=body,headers={**H,'Prefer':'return=minimal'},timeout=30)
+        if vals: n+=1; log.info(f"  {q[:30]:32} {len(vals)} parcel(s) ${vals[0]:,}–${vals[-1]:,}")
+        else: log.info(f"  {q[:30]:32} no exact owner match")
+    log.info(f'resolved {n} buyer price bands'); return n
+
 def main(limit=60):
+    resolve_buyer_parcels(int(os.environ.get('BUYER_LIMIT','30')))
     resolve_divorces(int(os.environ.get('DIVORCE_LIMIT','40')))
     resolve_obituaries(int(os.environ.get('OBIT_LIMIT','40')))
     resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
