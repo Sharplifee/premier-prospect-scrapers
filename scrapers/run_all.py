@@ -563,6 +563,8 @@ def scrape_court_calendars():
     s = requests.Session(); s.headers['User-Agent'] = 'Mozilla/5.0'
     seen, signals = set(), []
     rx = re.compile(r'title="Hearing location[^"]*?More Info\.\s*(.*?)\. Case #(\d{9}), ([\d/]+ [\d:]+ [AP]M)"')
+    # hearing type is free text after the courtroom line: <hr class="sep" />JUDGE<br>ROOM<br>TYPE</div>
+    rx_type = re.compile(r'<hr class="sep" />[^<]*<br>[^<]*<br>([^<]{3,60})</div>')
     for loc, (county, courthouse) in COURT_LOCS.items():
         for q in COURT_SUBSTRINGS:
             try:
@@ -570,17 +572,25 @@ def scrape_court_calendars():
                           params={'t': 'j', 'j': q, 'd': 'all', 'loc': loc}, timeout=90)
             except Exception as e:
                 log.warning(f'[{slug}] {loc} {q}: {type(e).__name__}'); continue
-            for parties, case, when in rx.findall(r.text):
+            titles = rx.findall(r.text); htypes = rx_type.findall(r.text)
+            for idx, (parties, case, when) in enumerate(titles):
                 if case in seen: continue
+                htype = html.unescape(htypes[idx]).strip().upper() if idx < len(htypes) else ''
                 # Utah case numbers are YYTDNNNNN: T = case type, D = district code
                 # (Provo's Fourth District shows 4, Salt Lake's Third shows 9). Match on T.
                 tcode = case[2]
                 if tcode not in ('4', '6', '3', '9', '0'): continue
                 code = tcode + '4'   # normalise to the Fourth-District spelling the mapper expects
-                owner = _court_owner(parties, code)
+                is_evict = tcode == '0' and re.search(r'EVICT|OCCUPANCY|UNLAWFUL DET|POSSESSION', htype) is not None
+                if is_evict:
+                    # plaintiff = landlord. A natural-person landlord with a problem tenant sells rentals.
+                    a = re.split(r'\s+vs\.?\s+', html.unescape(parties), 1, flags=re.I)
+                    owner = re.sub(r'\s+et al\.?$', '', a[0], flags=re.I).strip() if len(a) == 2 else None
+                else:
+                    owner = _court_owner(parties, code)
                 if not owner or pp_is_inst_local(owner): continue
                 seen.add(case)
-                sig, score = {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
+                sig, score = ('eviction_landlord', 58) if is_evict else {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
                               '34': ('probate_filing', 84), '94': ('creditor_suit', 62),
                               '04': ('civil_property', 66)}[code]
                 signals.append({
@@ -589,7 +599,7 @@ def scrape_court_calendars():
                     'raw_owner_name': clean_owner(owner),
                     'raw_address': f'{sig.replace("_", " ").title()} — Case #{case}',
                     'raw_payload': json.dumps({'entry': case, 'koi': f'COURT-{code}', 'case_type': code,
-                                               'parties': html.unescape(parties), 'hearing': when,
+                                               'parties': html.unescape(parties), 'hearing': when, 'hearing_type': htype,
                                                'courthouse': courthouse, 'source': 'Utah Court Calendar'}),
                 })
             time.sleep(0.8)
