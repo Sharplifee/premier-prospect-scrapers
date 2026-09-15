@@ -583,12 +583,6 @@ def scrape_court_calendars():
                 sig, score = {'44': ('divorce_filing', 82), '64': ('divorce_filing', 82),
                               '34': ('probate_filing', 84), '94': ('creditor_suit', 62),
                               '04': ('civil_property', 66)}[code]
-                # case age decay: YY prefix is the filing year. A 2012 divorce still on
-                # the calendar is enforcement, not a household splitting.
-                try:
-                    age = datetime.date.today().year - (2000 + int(case[:2]))
-                    score = round(score * (1.0 if age <= 1 else 0.75 if age <= 3 else 0.40))
-                except ValueError: pass
                 signals.append({
                     'source_slug': slug, 'signal_type': sig, 'score': score,
                     'county': county, 'city': None,
@@ -618,6 +612,8 @@ WASATCH_TYPES = {
     'SUBSTITUTION OF TRUSTEE':         ('trustee_substitution',  88),   # exact only; "& RECONVEYA" variant is a payoff
     'AFFIDAVIT OF SUCCESSOR TRUSTEE':  ('trustee_substitution',  88),
     'LIS PENDENS':                     ('lis_pendens',           90),
+    'NOTICE OF LIS PENDENS':           ('lis_pendens',           90),
+    'AMENDED NOTICE LIS PENDENS':      ('lis_pendens',           90),
     'NOTICE OF LIEN':                  ('lien_judgment',         68),
     'NOTICE OF FEDERAL TAX LIEN':      ('lien_judgment',         70),
     'NOTICE OF ROLL BACK TAX':         ('tax_delinquency',       55),
@@ -666,7 +662,9 @@ def scrape_wasatch_recorder():
         if not hit: continue
         sig_type, score = hit
         # the party under pressure: grantee on lender-originated instruments, grantor otherwise
-        owner = grantee if sig_type in ('nod', 'nts', 'trustee_substitution', 'lien_judgment', 'tax_delinquency', 'code_violation') else grantor
+        # the party under pressure is the GRANTEE on anything filed AGAINST an owner —
+        # including lis pendens, where the grantor is the plaintiff (HOA, lender)
+        owner = grantee if sig_type in ('nod', 'nts', 'trustee_substitution', 'lien_judgment', 'tax_delinquency', 'code_violation', 'lis_pendens', 'notice_of_interest') else grantor
         seen.add(entry)
         signals.append({
             'source_slug': slug, 'signal_type': sig_type, 'score': score,
@@ -748,7 +746,7 @@ def scrape_summit_recorder():
             parcel = next((c for c in cells if re.match(r'^[A-Z]{2,6}-[A-Z0-9-]+$', c)), None)
             # the OWNER is the party the distress is against: the grantee on NOD/NTS
             # (trustee → borrower), the grantee on a lien (claimant → owner).
-            owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency') else grantor
+            owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency', 'lis_pendens') else grantor
             seen.add(docnum)
             signals.append({
                 'source_slug': slug, 'signal_type': sig_type, 'score': score,
