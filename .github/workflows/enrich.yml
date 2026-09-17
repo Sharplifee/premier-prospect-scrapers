@@ -26,11 +26,12 @@ jobs:
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       HIST_LIMIT:   ${{ github.event.inputs.hist_limit || '55' }}
       PARCEL_LIMIT: ${{ github.event.inputs.parcel_limit || '80' }}
-      NAME_LIMIT: '60'
+      NAME_LIMIT: '250'
       OBIT_LIMIT: '40'
       DIVORCE_LIMIT: '60'
       BUYER_LIMIT: '30'
       GEO_LIMIT: '2500'
+      SL_LIMIT: '150'
       TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
       TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
       TWILIO_MESSAGING_SERVICE_SID: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
@@ -46,6 +47,9 @@ jobs:
 
       - name: Assessor parcel intel (value, mailing address, absentee)
         run: timeout 20m python scrapers/parcel_intel.py || echo "parcel step ended (timeout or error) — continuing"
+
+      - name: Salt Lake owner → parcel (county assessor owner search; exact unique match only)
+        run: timeout 20m python scrapers/saltlake_intel.py || echo "salt lake step ended — continuing"
 
       - name: Parcel geometry (city, address, map point from the state parcel layers)
         run: timeout 25m python scrapers/parcel_geo.py || echo "geo step ended — continuing"
