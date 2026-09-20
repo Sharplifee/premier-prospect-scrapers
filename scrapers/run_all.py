@@ -861,7 +861,12 @@ def scrape_utah_recorder_unified():
             # On a trustee deed / death affidavit the GRANTOR is the party of
             # interest (the foreclosed owner / the decedent).
             # On an ND / CAN ND the borrower is the GRANTEE (grantor is the trustee or title company).
+            # On an AF DC (death affidavit) the grantor is the DECEDENT and the grantee is the successor/heir —
+            # the person to reach. Fall back to the decedent when no successor is named ("WHOM OF INTEREST").
             party = grantee if sig_type in ('nod', 'nod_cancelled') else grantor
+            extra = {}
+            if sig_type == 'death_affidavit' and grantee and not re.search(r'WHOM OF INTEREST|LLC|INC\b|BANK|MORTGAGE|CORP', grantee, re.I):
+                party, extra = grantee, {'decedent': grantor, 'party_role': 'successor'}
             signals.append({
                 'source_slug': slug, 'signal_type': sig_type, 'score': score,
                 'county': 'Utah', 'city': None,
@@ -869,7 +874,7 @@ def scrape_utah_recorder_unified():
                 'raw_address': f'Entry #{entry}',
                 'raw_payload': json.dumps({
                     'koi': koi, 'label': label, 'entry': entry,
-                    'rec_date': rec_dt, 'grantor': grantor, 'grantee': grantee,
+                    'rec_date': rec_dt, 'grantor': grantor, 'grantee': grantee, **extra,
                 }),
             })
         time.sleep(2)   # county server — be polite
