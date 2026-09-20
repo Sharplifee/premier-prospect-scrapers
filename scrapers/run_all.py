@@ -816,8 +816,13 @@ RECORDER_KOI_MAP = {
     #     means the debt was SATISFIED and the trust deed released. That is a
     #     RESOLUTION, not distress. Scoring it as distress previously put 158
     #     paid-off homeowners into the primed calling queue.
-    'SUB TEE':    ('trustee_substitution', 88, 'Substitution of trustee — pre-foreclosure'),
-    'SUBTEE':     ('trustee_substitution', 88, 'Substitution of trustee — pre-foreclosure'),
+    # VERIFIED Sep 20 2026 from the live recorder index: Utah County records a Notice of
+    # Default as kind "ND" (trustee/title company → borrower) and its cancellation as
+    # "CAN ND". ND is THE foreclosure-start signal and was never collected here before.
+    'ND':         ('nod',                 88, 'Notice of default — foreclosure started'),
+    'CAN ND':     ('nod_cancelled',       25, 'Notice of default cancelled — cured or withdrawn'),
+    'SUB TEE':    ('trustee_substitution', 60, 'Substitution of trustee — often routine; matters when an ND follows'),
+    'SUBTEE':     ('trustee_substitution', 60, 'Substitution of trustee — pre-foreclosure'),
     'RSUBTEE':    ('loan_reconveyance',    25, 'Trustee substitution WITH reconveyance — debt satisfied'),
     'WD':         ('deed_transfer',      55, 'Warranty deed'),
     'SP WD':      ('deed_transfer',      55, 'Special warranty deed'),
@@ -855,10 +860,12 @@ def scrape_utah_recorder_unified():
             sig_type, score, label = RECORDER_KOI_MAP[koi]
             # On a trustee deed / death affidavit the GRANTOR is the party of
             # interest (the foreclosed owner / the decedent).
+            # On an ND / CAN ND the borrower is the GRANTEE (grantor is the trustee or title company).
+            party = grantee if sig_type in ('nod', 'nod_cancelled') else grantor
             signals.append({
                 'source_slug': slug, 'signal_type': sig_type, 'score': score,
                 'county': 'Utah', 'city': None,
-                'raw_owner_name': clean_owner(grantor) if grantor else None,
+                'raw_owner_name': clean_owner(party) if party else None,
                 'raw_address': f'Entry #{entry}',
                 'raw_payload': json.dumps({
                     'koi': koi, 'label': label, 'entry': entry,
@@ -2174,7 +2181,7 @@ def scrape_comparable_sales_slco():
 # Only scrapers that actually work and produce real data
 SCRAPERS = [
     # Core distress — most important, run every cycle
-    ('utah-county-nts',             scrape_utah_county_nts),
+    # ('utah-county-nts', scrape_utah_county_nts),  # RETIRED Sep 20 2026: it labelled trustee SUBSTITUTIONS (mostly reconveyances = loans paid off) as notices of sale at score 99. Utah County does not record notices of sale; the unified sweep now carries ND / CAN ND / SUB TEE.
     ('utah-deeds-of-trust',         scrape_deeds_of_trust),
     ('utah-county-tax-delinquency-pdf', scrape_utah_county_tax_delinquency_pdf),
     ('utah-recorder-unified',       scrape_utah_recorder_unified),
