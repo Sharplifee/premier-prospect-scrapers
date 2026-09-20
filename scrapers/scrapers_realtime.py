@@ -246,10 +246,8 @@ def scrape_slco_recorder():
     # DocDescSearch ignores the DocDesc param — returns all recent docs.
     # Real fix: pull all docs once per county, filter by KOI column.
     KOI_MAP = {
-        'N TR D': ('nts',          99),
-        'NTS':    ('nts',          99),
-        'N OF D': ('nod',          88),
-        'NOD':    ('nod',          88),
+        'ND':     ('nod',          88),
+        'CAN ND': ('nod_cancelled', 25),
         'TR D':   ('trustee_deed', 85),
         'WD':     ('deed_transfer', 55),
         'C WD':   ('deed_transfer', 52),
@@ -263,7 +261,10 @@ def scrape_slco_recorder():
                      'FANNIE','FREDDIE','HUD','USA ','U.S.','LLC BY'}
 
     batch = []
-    for county_name in ['Salt Lake', 'Utah']:
+    # Sep 20 2026 audit: this endpoint is the UTAH COUNTY recorder only; 'Salt Lake' rows it produced were Utah County
+    # documents mislabelled, and the DOC_TYPES text path stamped 'NOTICE OF DEFAULT' on deeds of trust and quit-claims.
+    # KOI-only, Utah County only. ND / CAN ND / SUB TEE are carried by the unified sweep in run_all.py.
+    for county_name in ['Utah']:
         try:
             r = SESSION.post(
                 'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
