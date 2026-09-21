@@ -67,3 +67,7 @@ jobs:
             echo "$fn -> $code $(head -c 40 /tmp/r.txt)"
             [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
           done
+
+
+      - name: Integrity gate (invariants + live county spot-check) — fails the run on any fabricated or mislabelled data
+        run: python scrapers/integrity_spotcheck.py
