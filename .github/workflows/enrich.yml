@@ -62,7 +62,7 @@ jobs:
       - name: Recompute convergence + caches
         run: |
           H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
-          for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_kpi_cache; do
+          for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_map_and_perf pp_refresh_kpi_cache; do
             code=$(curl -s -o /tmp/r.txt -w "%{http_code}" -X POST "${H[@]}" "$SUPABASE_URL/rest/v1/rpc/$fn" -d '{}' --max-time 180)
             echo "$fn -> $code $(head -c 40 /tmp/r.txt)"
             [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
