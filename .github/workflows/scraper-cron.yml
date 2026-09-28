@@ -69,6 +69,32 @@ jobs:
         id: scrapers
         run: python scrapers/run_all.py
 
+      - name: Verify this run was actually saved
+        # Added 2026-09-28: with the database down, two scheduled runs reported
+        # success while saving nothing. A run only counts if its rows landed.
+        if: steps.scrapers.outcome == 'success'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          SINCE=$(date -u -d '-45 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          N=unknown
+          for i in 1 2 3; do
+            N=$(curl -s --max-time 20 "$SUPABASE_URL/rest/v1/pp_run_log?run_at=gte.$SINCE&select=id" \
+              -H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+              | python3 -c "import sys,json;d=sys.stdin.read();print(len(json.loads(d)) if d.strip().startswith('[') else 'unknown')" 2>/dev/null || echo unknown)
+            [ "$N" != "unknown" ] && break; sleep 20
+          done
+          echo "Run-log rows written by this run: $N"
+          if [ "$N" = "unknown" ] || [ "$N" = "0" ]; then
+            echo "::error::Scrapers ran but nothing was saved (database unreachable or writes failing)."
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_SID }}/Messages.json" \
+              --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" \
+              --data-urlencode "From=${{ secrets.TWILIO_FROM }}" --data-urlencode "To=${{ secrets.ALERT_TO }}" \
+              --data-urlencode "Body=🔴 Premier Prospect: scraper run #${{ github.run_number }} saved nothing — database unreachable" || true
+            exit 1
+          fi
+
       - name: Keepalive commit (prevents GitHub cron pause)
         if: always()
         # continue-on-error: this step is HOUSEKEEPING ONLY. It exists to stop
