@@ -2197,14 +2197,15 @@ SCRAPERS = [
     # LIR parcels
     # Extended AGRC parcel coverage (bonus counties)
     # SLCO Recorder — real-time NTS/NOD/Deed/Lien for Salt Lake County
-    ('slco-recorder-live',          scrape_slco_recorder if REALTIME_LOADED else lambda: 0),
+    # 2026-09-27 retired: 'slco-recorder-live' reads the same Utah County DocDescSearch feed that
+    # utah-recorder-unified sweeps daily, so every row deduped to zero (integrity gate: gone quiet).
     # HMDA — daily only (now live 2024/2025 data)
     # FSBO & marketplace
     # Enrichment
     ('obituaries-enrichment',       scrape_obituaries_enrichment),
     # Buyer side — daily only
     # Buyer signals
-    ('comparable-sales-slco',       scrape_comparable_sales_slco),
+    # 2026-09-27 retired: 'comparable-sales-slco' — same Utah County feed; its WDs arrive as deed_transfer via utah-recorder-unified.
     # Market data → pp_market_data
     # MLS (no-op until token)
     ('mls-expired-listings',        scrape_mls_expired),
