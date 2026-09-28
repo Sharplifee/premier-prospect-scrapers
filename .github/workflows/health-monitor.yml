@@ -102,3 +102,53 @@ jobs:
               || echo "::warning::Twilio alert failed to send (non-fatal)"
           fi
 
+
+      # Added 2026-09-27: the scrapers kept running green while the nightly
+      # Enrichment recompute failed four nights straight, and this monitor
+      # never noticed because it only checked the scrape. This step checks the
+      # ranked queue itself; if it is stale it re-runs Enrichment, texts an
+      # alert, and fails so the problem is visible instead of silent.
+      - name: Check ranked queue freshness and re-run Enrichment if stale
+        env:
+          GITHUB_TOKEN: ${{ secrets.WORKFLOW_DISPATCH_PAT || secrets.GITHUB_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: |
+          set -uo pipefail
+          LAST=$(curl -s --max-time 20 \
+            "$SUPABASE_URL/rest/v1/pp_entity_conviction?select=computed_at&order=computed_at.desc&limit=1" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            | python3 -c "import sys,json;d=sys.stdin.read();r=json.loads(d) if d.strip().startswith('[') else None;print(r[0]['computed_at'] if r else 'unknown')" 2>/dev/null || echo unknown)
+          echo "Ranked queue last computed: $LAST"
+          if [ "$LAST" = "unknown" ]; then
+            echo "::warning::Could not read pp_entity_conviction (transient) — skipping."; exit 0
+          fi
+          HOURS=$(( ( $(date +%s) - $(python3 -c "import datetime;print(int(datetime.datetime.fromisoformat('$LAST'.replace('Z','+00:00')).timestamp()))") ) / 3600 ))
+          echo "Hours since last recompute: $HOURS"
+          if [ "$HOURS" -le 30 ]; then echo "Ranked queue fresh — PASS"; exit 0; fi
+
+          echo "::error::Ranked queue stale (${HOURS}h) — nightly Enrichment is not completing. Re-running it."
+          # Only if no Enrichment run is already in flight (it takes up to 85 min).
+          BUSY=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/enrich.yml/runs?per_page=5" \
+            | python3 -c "import sys,json;print(sum(r['status'] in ('queued','in_progress') for r in json.load(sys.stdin).get('workflow_runs',[])))" 2>/dev/null || echo 0)
+          if [ "$BUSY" = "0" ]; then
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/enrich.yml/dispatches" \
+              -d '{"ref":"main"}')
+            echo "Enrichment dispatch: HTTP $CODE"
+          else
+            echo "Enrichment already running — not dispatching another."
+          fi
+          if [ -n "${TWILIO_SID:-}" ] && [ -n "${ALERT_TO:-}" ]; then
+            curl -sf -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode "Body=⚠️ Premier Prospect: lead ranking stale ${HOURS}h — nightly recompute failing, auto re-run started" \
+              || echo "::warning::Twilio alert failed (non-fatal)"
+          fi
+          exit 1
