@@ -123,9 +123,26 @@ jobs:
             "$SUPABASE_URL/rest/v1/pp_entity_conviction?select=computed_at&order=computed_at.desc&limit=1" \
             -H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             | python3 -c "import sys,json;d=sys.stdin.read();r=json.loads(d) if d.strip().startswith('[') else None;print(r[0]['computed_at'] if r else 'unknown')" 2>/dev/null || echo unknown)
+          # Unreadable once can be a hiccup; unreadable three times over a minute is an outage (Sept 28:
+          # the database went down and this step read "unknown" and passed green). Treat that as red.
+          for i in 1 2; do
+            [ "$LAST" != "unknown" ] && break
+            sleep 30
+            LAST=$(curl -s --max-time 20 \
+              "$SUPABASE_URL/rest/v1/pp_entity_conviction?select=computed_at&order=computed_at.desc&limit=1" \
+              -H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+              | python3 -c "import sys,json;d=sys.stdin.read();r=json.loads(d) if d.strip().startswith('[') else None;print(r[0]['computed_at'] if r else 'unknown')" 2>/dev/null || echo unknown)
+          done
           echo "Ranked queue last computed: $LAST"
           if [ "$LAST" = "unknown" ]; then
-            echo "::warning::Could not read pp_entity_conviction (transient) — skipping."; exit 0
+            echo "::error::Database unreachable on 3 attempts over 60s — Premier Prospect is down."
+            if [ -n "${TWILIO_SID:-}" ] && [ -n "${ALERT_TO:-}" ]; then
+              curl -sf -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
+                --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+                --data-urlencode "Body=🔴 Premier Prospect: database unreachable — app, CRM and nightly job are down" \
+                || echo "::warning::Twilio alert failed (non-fatal)"
+            fi
+            exit 1
           fi
           HOURS=$(( ( $(date +%s) - $(python3 -c "import datetime;print(int(datetime.datetime.fromisoformat('$LAST'.replace('Z','+00:00')).timestamp()))") ) / 3600 ))
           echo "Hours since last recompute: $HOURS"
