@@ -100,6 +100,10 @@ jobs:
               --data-urlencode "To=$ALERT_TO" \
               --data-urlencode "Body=⚠️ Premier Prospect: scraper stale ${HOURS_AGO}h — auto re-triggered" \
               || echo "::warning::Twilio alert failed to send (non-fatal)"
+            # Voice call too: texts from this account are carrier-blocked (A2P/toll-free unapproved, error 30034).
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Calls.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. The scrapers are stale and were re-triggered.</Say><Pause length="1"/><Say voice="Polly.Joanna">Premier Prospect alert. The scrapers are stale and were re-triggered.</Say></Response>' > /dev/null || true
           fi
 
 
@@ -141,6 +145,10 @@ jobs:
                 --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
                 --data-urlencode "Body=🔴 Premier Prospect: database unreachable — app, CRM and nightly job are down" \
                 || echo "::warning::Twilio alert failed (non-fatal)"
+              # Voice call too: texts from this account are carrier-blocked (A2P/toll-free unapproved, error 30034).
+              curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Calls.json" \
+                --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+                --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. The database is unreachable. The app, CRM and nightly job are down.</Say><Pause length="1"/><Say voice="Polly.Joanna">Premier Prospect alert. The database is unreachable. The app, CRM and nightly job are down.</Say></Response>' > /dev/null || true
             fi
             exit 1
           fi
@@ -167,5 +175,9 @@ jobs:
               --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
               --data-urlencode "Body=⚠️ Premier Prospect: lead ranking stale ${HOURS}h — nightly recompute failing, auto re-run started" \
               || echo "::warning::Twilio alert failed (non-fatal)"
+            # Voice call too: texts from this account are carrier-blocked (A2P/toll-free unapproved, error 30034).
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Calls.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. Lead ranking is stale. The nightly recompute is failing and a re-run was started.</Say><Pause length="1"/><Say voice="Polly.Joanna">Premier Prospect alert. Lead ranking is stale. The nightly recompute is failing and a re-run was started.</Say></Response>' > /dev/null || true
           fi
           exit 1

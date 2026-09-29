@@ -92,6 +92,10 @@ jobs:
               --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" \
               --data-urlencode "From=${{ secrets.TWILIO_FROM }}" --data-urlencode "To=${{ secrets.ALERT_TO }}" \
               --data-urlencode "Body=🔴 Premier Prospect: scraper run #${{ github.run_number }} saved nothing — database unreachable" || true
+            # Voice call too: texts from this account are carrier-blocked (A2P/toll-free unapproved, error 30034).
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_SID }}/Calls.json" \
+              --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" --data-urlencode "From=${{ secrets.TWILIO_FROM }}" --data-urlencode "To=${{ secrets.ALERT_TO }}" \
+              --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. A scraper run saved nothing. The database may be unreachable.</Say><Pause length="1"/><Say voice="Polly.Joanna">Premier Prospect alert. A scraper run saved nothing. The database may be unreachable.</Say></Response>' > /dev/null || true
             exit 1
           fi
 
@@ -132,3 +136,7 @@ jobs:
             --data-urlencode "From=${{ secrets.TWILIO_FROM }}" \
             --data-urlencode "To=${{ secrets.ALERT_TO }}" \
             --data-urlencode "Body=⚠️ Premier Prospect: scraper run #${{ github.run_number }} failed. Check https://github.com/Sharplifee/premier-prospect-scrapers/actions"
+          # Voice call too: texts from this account are carrier-blocked (A2P/toll-free unapproved, error 30034).
+          curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_SID }}/Calls.json" \
+            --user "${{ secrets.TWILIO_SID }}:${{ secrets.TWILIO_TOKEN }}" --data-urlencode "From=${{ secrets.TWILIO_FROM }}" --data-urlencode "To=${{ secrets.ALERT_TO }}" \
+            --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. A scraper run failed.</Say><Pause length="1"/><Say voice="Polly.Joanna">Premier Prospect alert. A scraper run failed.</Say></Response>' > /dev/null || true
