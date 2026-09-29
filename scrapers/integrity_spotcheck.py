@@ -17,10 +17,22 @@ ALLOWED={'ND':{'nod'},'CAN ND':{'nod_cancelled'},'SUB TEE':{'trustee_substitutio
          'LP':{'lis_pendens'},'REL LP':{'lis_pendens_release'},'TR D':{'trustee_deed'},'PR D':{'probate_deed'},'N LN':{'lien_judgment','mechanics_lien'},
          'JUDG':{'lien_judgment'},'ABST JU':{'lien_judgment'},'D TR':{'deed_of_trust'},'WD':{'deed_transfer','comparable_sale'},'SP WD':{'deed_transfer','comparable_sale'},'QCD':{'deed_transfer','family_transfer'}}
 fails=[]
-r=requests.post(f"{SB}/rest/v1/rpc/pp_integrity_check",headers=H,json={},timeout=300); res=r.json(); res=json.loads(res) if isinstance(res,str) else res
+def _call(method, url, **kw):
+    # The invariant sweep takes ~85s on the current compute size; right after the nightly recompute the database can
+    # answer with an error body instead of rows (Sept 28 run crashed on that). Retry, then fail loudly with the real error.
+    last=None
+    for attempt in range(3):
+        try:
+            r=S.request(method, url, headers=H, **kw)
+            if r.status_code < 300: return r.json()
+            last=f"HTTP {r.status_code}: {r.text[:200]}"
+        except Exception as e: last=repr(e)[:200]
+        time.sleep(30)
+    print(f"integrity gate could not reach the database: {url.split('/rest/v1/')[-1][:60]} -> {last}"); sys.exit(1)
+res=_call('POST', f"{SB}/rest/v1/rpc/pp_integrity_check", json={}, timeout=300); res=json.loads(res) if isinstance(res,str) else res
 print("invariants:", "PASSED" if res.get('passed') else "FAILED", json.dumps(res.get('failures')))
 if not res.get('passed'): fails.append(('invariants',res.get('failures')))
-rows=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=id,signal_type,raw_owner_name,raw_payload&county=eq.Utah&is_legacy=eq.false&is_institutional=eq.false&source_slug=eq.utah-recorder-unified&order=captured_at.desc&limit=400",headers=H,timeout=120).json()
+rows=_call('GET', f"{SB}/rest/v1/pp_scraper_signals?select=id,signal_type,raw_owner_name,raw_payload&county=eq.Utah&is_legacy=eq.false&is_institutional=eq.false&source_slug=eq.utah-recorder-unified&order=captured_at.desc&limit=400", timeout=120)
 sample=random.sample(rows, min(6,len(rows))); checked=0
 for s in sample:
     p=s['raw_payload']
@@ -53,7 +65,7 @@ def _fetch(entry):
     t=re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>',' ',re.sub(r'<(script|style)[^>]*>.*?</\1>','',g.text,flags=re.S|re.I)))).upper()
     return m.group(1), t
 def _surname(name): return re.split(r'[,\s]', name.strip().upper())[0]
-buyers=requests.get(f"{SB}/rest/v1/pp_buyer_intel?select=buyer_display,entries,is_move_up,sold_entry,buyer_score&counties=cs.{{Utah}}&order=buyer_score.desc&limit=60",headers=H,timeout=120).json()
+buyers=_call('GET', f"{SB}/rest/v1/pp_buyer_intel?select=buyer_display,entries,is_move_up,sold_entry,buyer_score&counties=cs.{{Utah}}&order=buyer_score.desc&limit=60", timeout=120)
 rec=[b for b in buyers if not b['is_move_up'] and b.get('entries')]; mv=[b for b in buyers if b['is_move_up'] and b.get('sold_entry')]
 for b in random.sample(rec, min(3,len(rec))) + random.sample(mv, min(2,len(mv))):
     entry = b['sold_entry'] if b['is_move_up'] else b['entries'][0]
