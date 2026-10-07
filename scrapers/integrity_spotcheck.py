@@ -32,6 +32,21 @@ def _call(method, url, **kw):
 res=_call('POST', f"{SB}/rest/v1/rpc/pp_integrity_check", json={}, timeout=300); res=json.loads(res) if isinstance(res,str) else res
 print("invariants:", "PASSED" if res.get('passed') else "FAILED", json.dumps(res.get('failures')))
 if not res.get('passed'): fails.append(('invariants',res.get('failures')))
+
+# Utah County delinquent-tax PDF: the county republishes it on its own schedule, so "no new rows" is normal.
+# What must hold is that it is still reachable and still parses into owner rows.
+try:
+    import io, pdfplumber
+    _u='https://www.utahcounty.gov/Dept/Treas/production-single-forms/delinquent-property-tax-report/UtahCounty_Delinquent_Property_Tax_report.pdf'
+    _r=S.get(_u,timeout=60)
+    if _r.status_code!=200: fails.append(('tax_pdf',f'HTTP {_r.status_code}'))
+    else:
+        with pdfplumber.open(io.BytesIO(_r.content)) as _pdf:
+            _n=sum(len(re.findall(r'\d{2}:\d{3}:\d{4}', p.extract_text() or '')) for p in _pdf.pages)
+        print(f"tax PDF: reachable, {_n} parcel rows, county last published {_r.headers.get('last-modified','unknown')}")
+        if _n<500: fails.append(('tax_pdf',f'only {_n} parcel rows parsed — layout may have changed'))
+except Exception as _e:
+    fails.append(('tax_pdf',repr(_e)[:160]))
 rows=_call('GET', f"{SB}/rest/v1/pp_scraper_signals?select=id,signal_type,raw_owner_name,raw_payload&county=eq.Utah&is_legacy=eq.false&is_institutional=eq.false&source_slug=eq.utah-recorder-unified&order=captured_at.desc&limit=400", timeout=120)
 sample=random.sample(rows, min(6,len(rows))); checked=0
 for s in sample:

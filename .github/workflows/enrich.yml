@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install -q requests
+      - run: pip install -q requests pdfplumber
 
       - name: Historical mortgage (oldest outstanding trust deed per owner)
         run: timeout 20m python scrapers/historical_mortgage_enrichment.py || echo "mortgage step ended (timeout or error) — continuing"
