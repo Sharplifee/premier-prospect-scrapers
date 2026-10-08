@@ -54,6 +54,9 @@ jobs:
       - name: Parcel geometry (city, address, map point from the state parcel layers)
         run: timeout 25m python scrapers/parcel_geo.py || echo "geo step ended — continuing"
 
+      - name: Jobs moving in and out (state incentive announcements + WARN layoff notices, by city)
+        run: timeout 5m python scrapers/jobs_signals.py || echo "jobs step ended — continuing"
+
       - name: Outreach (SMS sequence — gated on carrier campaign approval)
         run: timeout 10m python scrapers/outreach.py || echo "outreach step ended — continuing"
 
