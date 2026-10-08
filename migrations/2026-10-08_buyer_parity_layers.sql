@@ -1,4 +1,37 @@
--- Oct 8 2026: buyer parity. 1031 window, divorcing homeowners, landlords; deadlines; overview + evidence + integrity checks.
+-- Oct 8 2026: buyer parity. 1031 window, divorcing homeowners, landlords; deadlines; overview + evidence + integrity checks;
+-- name-format-aware transfer classifier (trust funding and family deeds are not sales).
+-- Oct 8 2026: name-format-aware transfer classifier. The old one compared everything before the first
+-- comma, which works for Utah County ("LAST, FIRST & FIRST2") but not Wasatch/Summit ("LAST FIRST M, LAST2 FIRST2"),
+-- so "DELANEY GALE PORTER -> DELANEY GALE PORTER TR" (funding a living trust) counted as a sale.
+create or replace function pp_name_parts(t text) returns text[] language sql immutable as $$
+  select coalesce(array_agg(btrim(p)) filter (where btrim(p) <> ''), '{}')
+  from regexp_split_to_table(upper(coalesce(t,'')),
+         case when upper(coalesce(t,'')) ~ '^\s*[A-Z''\-]+\s*,' then '\s*(&|;)\s*' else '\s*(,|&|;)\s*' end) p $$;
+create or replace function pp_name_heads(t text) returns text[] language sql immutable as $$
+  select coalesce(array_agg(distinct h), '{}') from (
+    select regexp_replace(split_part(btrim(case when upper(coalesce(t,'')) ~ '^\s*[A-Z''\-]+\s*,'
+                                                then case when p like '%,%' then split_part(p, ',', 1) end
+                                                else p end), ' ', 1), '[^A-Z]', '', 'g') as h
+    from unnest(pp_name_parts(t)) p) x
+  where length(h) >= 3 and h !~ '^(THE|TRUST|TRUSTEE|TRUSTEES|TEE|TR|LLC|INC|CORP|ESTATE|JT|JR|SR|III|AND|OF|FAMILY|LIVING|REVOCABLE|CO|BY|ET|AL|WHOM|UTAH|AMERICAN|FIRST|NORTH|SOUTH|EAST|WEST|PARK|CITY|MOUNTAIN|SUMMIT|WASATCH)$' $$;
+create or replace function public.pp_txn_type(grantor text, grantee text) returns text language plpgsql immutable as $function$
+declare g text := upper(coalesce(grantor,'')); e text := upper(coalesce(grantee,''));
+        shared boolean; ent text := '\y(LLC|L L C|INC|CORP|LP|LLP|LTD|COMPANY|HOLDINGS|INVESTMENTS|PROPERTIES)\y';
+begin
+  if g = '' or e = '' then return 'unknown'; end if;
+  shared := pp_name_heads(g) && pp_name_heads(e);
+  -- spouse removed: same family, a couple on the grantor side, one person (not a trust) on the grantee side
+  if shared and cardinality(pp_name_parts(g)) >= 2 and cardinality(pp_name_parts(e)) = 1 and e !~ '\y(TR|TEE|TRUSTEE|TRUSTEES|TRUST)\y' then
+    return 'spouse_removed';
+  end if;
+  -- same family or into their own trust / entity: not a sale
+  if shared then return 'family_transfer'; end if;
+  -- person selling to a company = investor purchase (still a genuine sale)
+  if e ~ ent and g !~ ent then return 'investor_purchase'; end if;
+  return 'arms_length_sale';
+end $function$;
+
+update pp_scraper_signals set txn_type = pp_txn_type(pp_payload(raw_payload)->>'grantor', pp_payload(raw_payload)->>'grantee') where signal_type in ('deed_transfer','comparable_sale') and not is_legacy and pp_payload(raw_payload)->>'grantor' is not null and txn_type is distinct from pp_txn_type(pp_payload(raw_payload)->>'grantor', pp_payload(raw_payload)->>'grantee');
 
 alter table pp_buyer_intel add column if not exists deadline_at timestamptz;
 alter table pp_buyer_intel add column if not exists deadline_label text;
@@ -20,6 +53,18 @@ exception when others then
   exception when others then return null; end;
 end $$;
 
+-- recording dates are stored as the UTC calendar date. 1031 deadlines are calendar days: end of day 45 / day 180 in Utah time, counted from the recording date
+create or replace function pp_x1031_due(p_sold timestamptz, p_days int) returns timestamptz language sql immutable as $$
+  select ((((p_sold at time zone 'UTC')::date + p_days)::timestamp + interval '23 hours 59 minutes') at time zone 'America/Denver') $$;
+create or replace function pp_x1031_score(p_sold timestamptz) returns int language sql stable as $$
+  select case when pp_x1031_due(p_sold,45) > now()
+              then 80 + round(8 * least(45, extract(epoch from now()-p_sold)/86400.0) / 45)
+              else 78 - round(23 * greatest(0, least(135, extract(epoch from now()-p_sold)/86400.0 - 45)) / 135) end::int $$;
+create or replace function pp_x1031_why(p_county text, p_entry text, p_sold timestamptz) returns text language sql stable as $$
+  select 'Investor sale: sold '||p_county||' County entry #'||p_entry||' on '||to_char(p_sold at time zone 'UTC','Mon FMDD')
+    ||' and has bought nothing since. If it is a 1031 exchange, the replacement must be named by '
+    ||to_char(pp_x1031_due(p_sold,45) at time zone 'America/Denver','Mon FMDD')||' and closed by '||to_char(pp_x1031_due(p_sold,180) at time zone 'America/Denver','Mon FMDD, YYYY')||'.' $$;
+
 CREATE OR REPLACE FUNCTION public.pp_compute_buyers()
  RETURNS integer
  LANGUAGE plpgsql
@@ -31,6 +76,13 @@ begin
   perform set_config('statement_timeout','300000', true);
   delete from pp_buyer_signals where true;
   delete from pp_buyer_intel where true;
+
+  -- fractional and timeshare units change hands several times a year (Escala, Marriott Mountainside): not home buyers or sellers
+  create temp table t_frac on commit drop as
+  select parcel_serial from pp_scraper_signals
+  where not is_legacy and parcel_serial is not null and upper(coalesce(pp_payload(raw_payload)->>'koi','')) in ('WD','SP WD','WARRANTY DEED','SPECIAL WARRANTY DEED')
+    and captured_at > now() - interval '365 days'
+  group by parcel_serial having count(*) >= 3;
 
   -- 1. Recorded purchases: warranty deed grantees only (lenders on trust deeds are not buyers)
   create temp table t_purch on commit drop as
@@ -48,6 +100,10 @@ begin
       and not (upper(pp_payload(raw_payload)->>'grantee') ~ '\y(BANK|CREDIT UNION|TITLE|ESCROW|MORTGAGE|LENDING|SUBTEE|SUCTEE|TRUSTEE|POWER|ENERGY|GAS|TELECOM|PIPELINE|RAILROAD)\y')
       and upper(pp_payload(raw_payload)->>'grantee') !~ '\y(DEPARTMENT OF TRANSPORTATION|TRANSIT AUTHORITY|CITY|TOWN OF|COUNTY OF|STATE OF|UNITED STATES|MUNICIPAL|REDEVELOPMENT|SCHOOL DISTRICT|WATER|SEWER|IRRIGATION)\y'
       and upper(pp_payload(raw_payload)->>'grantee') !~ '(UDOT|UTAH TRANSIT|CITY CORPORATION|ROCKY MOUNTAIN POWER)'
+      -- a deed into your own trust, or between family, is not a purchase
+      and pp_txn_type(pp_payload(raw_payload)->>'grantor', pp_payload(raw_payload)->>'grantee') not in ('family_transfer','spouse_removed')
+      and upper(coalesce(pp_payload(raw_payload)->>'grantor','')||' '||coalesce(pp_payload(raw_payload)->>'grantee','')) !~ '(WESTGATE|MARRIOTT|HYATT|HILTON|WYNDHAM|ESCALA|VACATION|TIMESHARE|INTERVAL OWNERS|DIAMOND RESORTS|BLUEGREEN)'
+      and coalesce(parcel_serial,'') not in (select parcel_serial from t_frac)
   ) x;
 
   -- 2. Financing: trust deeds where the borrower is a purchase grantee within 14 days
@@ -91,6 +147,9 @@ begin
       and not pp_is_institutional(pp_payload(raw_payload)->>'grantor')
       and upper(pp_payload(raw_payload)->>'grantor') !~ '\y(TEE|TR|TRUST|TRUSTEE|ESTATE|PERSONAL REP|PERS REP|DEC|DECEASED|ET AL)\y'
       and captured_at > now() - interval '120 days'
+      and pp_txn_type(pp_payload(raw_payload)->>'grantor', pp_payload(raw_payload)->>'grantee') not in ('family_transfer','spouse_removed')
+      and upper(coalesce(pp_payload(raw_payload)->>'grantor','')||' '||coalesce(pp_payload(raw_payload)->>'grantee','')) !~ '(WESTGATE|MARRIOTT|HYATT|HILTON|WYNDHAM|ESCALA|VACATION|TIMESHARE|INTERVAL OWNERS|DIAMOND RESORTS|BLUEGREEN)'
+      and coalesce(parcel_serial,'') not in (select parcel_serial from t_frac)
   ) s
   where not exists (select 1 from t_purch p where p.buyer_norm=s.seller_norm and p.captured_at >= s.captured_at)
   group by seller_norm;
@@ -233,13 +292,16 @@ begin
     select pp_norm(g) as seller_norm, g as seller_raw, entry, county, captured_at, parcel_serial,
            upper(g) ~ '\y(LLC|L L C|INC|LP|LLLP|LTD|CORP|CORPORATION|COMPANY|HOLDINGS|PROPERTIES|PROPERTY|INVESTMENTS?|INVESTORS?|CAPITAL|VENTURES|PARTNERS|PARTNERSHIP|GROUP|REALTY|REAL ESTATE|RENTALS?|ASSETS|EQUITIES|ENTERPRISES)\y' as is_ent
     from (
-      select pp_payload(raw_payload)->>'grantor' as g,
+      select pp_payload(raw_payload)->>'grantor' as g, pp_payload(raw_payload)->>'grantee' as gee,
              regexp_replace(coalesce(pp_payload(raw_payload)->>'entry', raw_address),'[[:space:] ]+',' ','g') as entry,
              county, pp_rec_date(pp_payload(raw_payload), captured_at) as captured_at, parcel_serial
       from pp_scraper_signals
       where not is_legacy and upper(coalesce(pp_payload(raw_payload)->>'koi','')) in ('WD','SP WD','WARRANTY DEED','SPECIAL WARRANTY DEED')
     ) z
     where pp_norm(g) is not null and captured_at > now() - interval '180 days'
+      and pp_txn_type(g, gee) not in ('family_transfer','spouse_removed')
+      and upper(g||' '||coalesce(gee,'')) !~ '(WESTGATE|MARRIOTT|HYATT|HILTON|WYNDHAM|ESCALA|VACATION|TIMESHARE|INTERVAL OWNERS|DIAMOND RESORTS|BLUEGREEN)'
+      and coalesce(parcel_serial,'') not in (select parcel_serial from t_frac)
       and upper(g) !~ '\y(BANK|CREDIT UNION|TITLE|ESCROW|MORTGAGE|LENDING|LOAN|SERVICING|FEDERAL|SECRETARY|HOUSING|FANNIE|FREDDIE|HUD|VETERANS|CITY|TOWN|COUNTY|STATE OF|UNITED STATES|SCHOOL|DISTRICT|CHURCH|LATTER|BISHOP|HOMES|HOMEBUILDERS?|BUILDERS?|CONSTRUCTION|COMMUNITIES|DEVELOPMENT|DEVELOPERS?|OPENDOOR|OFFERPAD|RELOCATION|CARTUS|SIRVA|TRUST|TRUSTEE|TRUSTEES|TEE|TR|ESTATE|DECEASED|DEC|PERSONAL REP|PERS REP|ET AL|UNIVERSITY|HOSPITAL|POWER|WATER|IRRIGATION|RAILROAD|ASSOCIATION|FOUNDATION|HOA|CONDOMINIUM|OWNERS|LAND HOLDINGS|TOLL|PULTE|HORTON|LENNAR|FIELDSTONE|IVORY|RICHMOND|WOODSIDE|SFR|EREI|INVITATION|TRICON|PROGRESS RESIDENTIAL|AMERICAN HOMES)\y'
   ) s
   -- a developer selling off lots is not exchanging: more than 3 sales in 180 days is inventory, not an investment sale
@@ -256,7 +318,7 @@ begin
   insert into pp_buyer_signals(buyer_key,buyer_display,signal_type,county,entry,observed_at,detail)
   select 'B:'||buyer_norm, buyer_raw, 'exchange_window', county, sold_entry, sold_at,
          jsonb_build_object('basis','investor sold by warranty deed; no replacement purchase recorded since',
-                            'identify_by', (sold_at + interval '45 days')::date, 'close_by', (sold_at + interval '180 days')::date,
+                            'identify_by', (pp_x1031_due(sold_at,45) at time zone 'America/Denver')::date, 'close_by', (pp_x1031_due(sold_at,180) at time zone 'America/Denver')::date,
                             'parcel_serial', parcel_serial)
   from t_x1031;
 
@@ -265,8 +327,8 @@ begin
     buyer_score  = greatest(b.buyer_score, pp_x1031_score(x.sold_at)),
     buyer_type   = 'Investor sold, 1031 window',
     sold_entry = x.sold_entry, sold_at = x.sold_at,
-    deadline_at = case when x.sold_at > now()-interval '45 days' then x.sold_at + interval '45 days' else x.sold_at + interval '180 days' end,
-    deadline_label = case when x.sold_at > now()-interval '45 days' then 'Name replacement by' else 'Close replacement by' end,
+    deadline_at = case when pp_x1031_due(x.sold_at,45) > now() then pp_x1031_due(x.sold_at,45) else pp_x1031_due(x.sold_at,180) end,
+    deadline_label = case when pp_x1031_due(x.sold_at,45) > now() then 'Name replacement by' else 'Close replacement by' end,
     buyer_stage = 'active',
     why = pp_x1031_why(x.county, x.sold_entry, x.sold_at) || ' ' || coalesce(b.why,'')
   from t_x1031 x where b.buyer_key = 'B:'||x.buyer_norm;
@@ -277,8 +339,8 @@ begin
   select 'B:'||x.buyer_norm, x.buyer_raw, x.is_ent, 0, 1, array[x.county], x.sold_at, x.sold_at,
     0, 0, extract(day from (now()-x.sold_at))::int, pp_x1031_score(x.sold_at), 'Investor sold, 1031 window', array[x.sold_entry], now(),
     false, array['exchange_window'], false, x.sold_entry, x.sold_at, 'active', pp_x1031_why(x.county, x.sold_entry, x.sold_at), true,
-    case when x.sold_at > now()-interval '45 days' then x.sold_at + interval '45 days' else x.sold_at + interval '180 days' end,
-    case when x.sold_at > now()-interval '45 days' then 'Name replacement by' else 'Close replacement by' end
+    case when pp_x1031_due(x.sold_at,45) > now() then pp_x1031_due(x.sold_at,45) else pp_x1031_due(x.sold_at,180) end,
+    case when pp_x1031_due(x.sold_at,45) > now() then 'Name replacement by' else 'Close replacement by' end
   from t_x1031 x
   where not exists (select 1 from pp_buyer_intel b where b.buyer_key = 'B:'||x.buyer_norm);
 
@@ -410,7 +472,7 @@ declare f jsonb := '[]'::jsonb; c jsonb := '{}'::jsonb; n bigint; t text; begin
   select count(*) into n from pp_conviction_queue where max_stage=5; c := c || jsonb_build_object('stage5', n); if n>0 then f := f || jsonb_build_object('check','no auction stage without a sale notice source','count',n); end if;
   select count(*) into n from pp_conviction_queue where owner_display ~* '\m(BANK|MORTGAGE|SERVICING|LENDING|FEDERAL|CREDIT UNION|MERS)\M'; c := c || jsonb_build_object('lenders_in_queue', n); if n>0 then f := f || jsonb_build_object('check','no lenders in the queue','count',n); end if;
   select count(*) into n from pp_conviction_queue where conviction_score > 65 and not property_confirmed; c := c || jsonb_build_object('unconfirmed_above_65', n); if n>0 then f := f || jsonb_build_object('check','no lead above 65 without a property tie','count',n); end if;
-  select count(*) into n from pp_buyer_intel b where purchases > (select count(distinct regexp_replace(coalesce(pp_payload(s.raw_payload)->>'entry', s.raw_address),'[[:space:]\u00a0]+',' ','g')) from pp_scraper_signals s where not s.is_legacy and s.signal_type in ('deed_transfer','comparable_sale') and 'B:'||pp_norm(pp_payload(s.raw_payload)->>'grantee') = b.buyer_key); c := c || jsonb_build_object('buyers_overcounted', n); if n>0 then f := f || jsonb_build_object('check','buyer purchases are distinct documents','count',n); end if;
+  select count(*) into n from pp_buyer_intel b left join (select 'B:'||pp_norm(pp_payload(s.raw_payload)->>'grantee') k, count(distinct regexp_replace(coalesce(pp_payload(s.raw_payload)->>'entry', s.raw_address),'[[:space:]\u00a0]+',' ','g')) d from pp_scraper_signals s where not s.is_legacy and s.signal_type in ('deed_transfer','comparable_sale') group by 1) g on g.k=b.buyer_key where b.purchases > coalesce(g.d,0); c := c || jsonb_build_object('buyers_overcounted', n); if n>0 then f := f || jsonb_build_object('check','buyer purchases are distinct documents','count',n); end if;
   select count(*) into n from pp_buyer_intel where buyer_display ~* '\m(BANK|MORTGAGE|SERVICING|LENDING|FEDERAL|CREDIT UNION|MERS|TITLE|ESCROW)\M'; c := c || jsonb_build_object('lenders_as_buyers', n); if n>0 then f := f || jsonb_build_object('check','no lenders or title companies as buyers','count',n); end if;
   select count(*) into n from pp_buyer_intel b where not b.is_move_up and not exists (select 1 from pp_buyer_signals s where s.buyer_key=b.buyer_key and s.signal_type in ('purchase','exchange_window','divorce','landlord')); c := c || jsonb_build_object('buyers_without_deed', n); if n>0 then f := f || jsonb_build_object('check','every buyer rests on a recorded deed or court case','count',n); end if;
   select count(*) into n from pp_buyer_intel b where b.is_move_up and (b.sold_entry is null or pp_is_institutional(b.buyer_display) or not exists (select 1 from pp_buyer_signals s where s.buyer_key=b.buyer_key and s.signal_type='move_up')); c := c || jsonb_build_object('moveup_without_sale', n); if n>0 then f := f || jsonb_build_object('check','every move-up buyer rests on a recorded sale','count',n); end if;
