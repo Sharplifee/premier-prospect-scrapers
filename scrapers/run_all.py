@@ -723,7 +723,14 @@ SUMMIT_TYPES = {
     '614': ('tax_delinquency',       55, 'Assessors Rollback Tax Lien'),
     '012': ('death_affidavit',       85, 'Death Certificate'),
     '007': ('affidavit',             40, 'Affidavit'),
+    # Oct 2026 buyer parity: sales and purchase loans, so Summit buyers (move-up, repeat,
+    # investor, 1031 window) come from the same recorder feed as its distress filings.
+    '060': ('deed_transfer',         55, 'Warranty Deed'),
+    '102': ('deed_of_trust',         35, 'Trust Deed'),
+    '055': ('trustee_deed',          92, 'Trustees Deed'),
 }
+# timeshare interval sales flood the Summit deed feed (Westgate, Marriott, Hyatt) — not real-estate buyers or sellers
+SUMMIT_TIMESHARE = re.compile(r'WESTGATE|MARRIOTT|HYATT|VACATION OWNERSHIP|TIMESHARE|INTERVAL OWNERS', re.I)
 def scrape_summit_recorder():
     slug = 'summit-recorder-eagle'
     log.info(f'[{slug}] starting')
@@ -736,23 +743,30 @@ def scrape_summit_recorder():
         s.get(f'{B}/eagleweb/docSearch.jsp', timeout=45)
     except Exception as e:
         log.error(f'[{slug}] login failed: {e}'); return 0
-    end = datetime.date.today(); start = end - datetime.timedelta(days=30)
-    data = [('RecordingDateIDStart', start.strftime('%m/%d/%Y')), ('RecordingDateIDEnd', end.strftime('%m/%d/%Y')),
-            ('docTypeTotal', '225'), ('NameIDSearchType', '1'), ('CreatedByIDSearchType', '1'), ('WaterMineNameIDSearchType', '1')]
-    data += [('__search_select', k) for k in SUMMIT_TYPES]
-    try:
-        r = s.post(f'{B}/eagleweb/docSearchPOST.jsp', data=data, timeout=90, allow_redirects=True)
-    except Exception as e:
-        log.error(f'[{slug}] search failed: {e}'); return 0
+    # SUMMIT_DAYS lets a one-off backfill reach further back; the daily run looks back 14 days
+    # (dedupe keeps history). Searched in 14-day windows so each stays a few result pages.
+    total_days = int(os.environ.get('SUMMIT_DAYS', '14'))
+    end_all = datetime.date.today()
+    pages = []
+    for off in range(0, total_days, 14):
+        end = end_all - datetime.timedelta(days=off); start = end - datetime.timedelta(days=min(14, total_days - off))
+        data = [('RecordingDateIDStart', start.strftime('%m/%d/%Y')), ('RecordingDateIDEnd', end.strftime('%m/%d/%Y')),
+                ('docTypeTotal', '225'), ('NameIDSearchType', '1'), ('CreatedByIDSearchType', '1'), ('WaterMineNameIDSearchType', '1')]
+        data += [('__search_select', k) for k in SUMMIT_TYPES]
+        try:
+            r = s.post(f'{B}/eagleweb/docSearchPOST.jsp', data=data, timeout=150, allow_redirects=True)
+        except Exception as e:
+            log.error(f'[{slug}] search {start}..{end} failed: {e}'); continue
+        pages.append(r.text)
+        # Eagle Web pages results at 100/page. The href is HTML-escaped (&amp;page=N): unescape it,
+        # or the server ignores the page number and every "next" page repeats page 1.
+        for pg in range(2, 25):
+            m = re.search(r'href="([^"]*docSearchResults\.jsp[^"]*page=' + str(pg) + r')"', pages[-1])
+            if not m: break
+            try: pages.append(s.get(f'{B}/eagleweb/' + html.unescape(m.group(1)).split('eagleweb/')[-1], timeout=120).text)
+            except Exception: break
+            time.sleep(1.0)
     signals, seen = [], set()
-    pages = [r.text]
-    # Eagle Web pages results at 100/page: follow "next" links if present
-    for pg in range(2, 6):
-        m = re.search(r'href="([^"]*docSearchResults\.jsp[^"]*page=' + str(pg) + r'[^"]*)"', pages[-1])
-        if not m: break
-        try: pages.append(s.get(f'{B}/eagleweb/' + m.group(1).split('eagleweb/')[-1], timeout=60).text)
-        except Exception: break
-        time.sleep(1.2)
     for page in pages:
         for raw in re.findall(r'<tr[^>]*>(.*?)</tr>', page, re.S | re.I):
             cells = [c.strip() for c in re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '|', raw))).split('|') if c.strip()]
@@ -769,6 +783,8 @@ def scrape_summit_recorder():
                     i = cells.index(lbl); return cells[i + 1] if i + 1 < len(cells) else ''
                 return ''
             grantor, grantee = after('From:'), after('To:')
+            if sig_type in ('deed_transfer', 'deed_of_trust') and (SUMMIT_TIMESHARE.search(grantor or '') or SUMMIT_TIMESHARE.search(grantee or '')):
+                seen.add(docnum); continue
             parcel = next((c for c in cells if re.match(r'^[A-Z]{2,6}-[A-Z0-9-]+$', c)), None)
             # the OWNER is the party the distress is against: the grantee on NOD/NTS
             # (trustee → borrower), the grantee on a lien (claimant → owner).
