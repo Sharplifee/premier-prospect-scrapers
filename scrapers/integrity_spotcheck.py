@@ -80,17 +80,23 @@ def _fetch(entry):
     t=re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>',' ',re.sub(r'<(script|style)[^>]*>.*?</\1>','',g.text,flags=re.S|re.I)))).upper()
     return m.group(1), t
 def _surname(name): return re.split(r'[,\s]', name.strip().upper())[0]
-buyers=_call('GET', f"{SB}/rest/v1/pp_buyer_intel?select=buyer_display,entries,is_move_up,sold_entry,buyer_score&counties=cs.{{Utah}}&order=buyer_score.desc&limit=60", timeout=120)
-rec=[b for b in buyers if not b['is_move_up'] and b.get('entries')]; mv=[b for b in buyers if b['is_move_up'] and b.get('sold_entry')]
-for b in random.sample(rec, min(3,len(rec))) + random.sample(mv, min(2,len(mv))):
-    entry = b['sold_entry'] if b['is_move_up'] else b['entries'][0]
+buyers=_call('GET', f"{SB}/rest/v1/pp_buyer_intel?select=buyer_display,entries,is_move_up,sold_entry,buyer_score,purchases,signal_types&counties=cs.{{Utah}}&order=buyer_score.desc&limit=120", timeout=120)
+# The person must be the GRANTOR on the sale we cite (just sold, 1031 window, flipper, taken off a title) and the
+# GRANTEE on the purchase we cite (recorded buyers). Court-only buyers (divorce, landlord) cite a court case, not a deed.
+def _sold(b): return bool(b.get('sold_entry')) and (b['is_move_up'] or bool(set(b.get('signal_types') or []) & {'exchange_window','flip'}))
+def _off(b): return 'off_title' in (b.get('signal_types') or []) and not b.get('purchases') and not _sold(b) and b.get('entries')
+rec=[b for b in buyers if (b.get('purchases') or 0) > 0 and b.get('entries') and not _sold(b)]
+mv=[b for b in buyers if _sold(b)]; off=[b for b in buyers if _off(b)]
+for b in random.sample(rec, min(3,len(rec))) + random.sample(mv, min(2,len(mv))) + random.sample(off, min(1,len(off))):
+    as_seller = _sold(b) or _off(b)
+    entry = b['sold_entry'] if _sold(b) else b['entries'][0]
     e,t=_fetch(entry)
     if not t: continue
     bchecked+=1
     k=re.search(r'KIND OF INST:\s*([A-Z][A-Z ]{0,10}?)\s+-',t); kind=k.group(1).strip() if k else '?'
-    role='GRANTOR' if b['is_move_up'] else 'GRANTEE'
+    role='GRANTOR' if as_seller else 'GRANTEE'
     seg=re.search(role+r'S?:?\s*(.{0,200})',t); named=bool(seg and _surname(b['buyer_display']) in seg.group(1))
-    ok = kind in ('WD','SP WD') and named
+    ok = kind in (('WD','SP WD','QCD','Q CD') if _off(b) else ('WD','SP WD')) and named
     print(f"  buyer entry {e} kind {kind!r:7} {role.lower()} names {_surname(b['buyer_display'])!r}: {'OK' if ok else 'MISMATCH'}")
     if not ok: fails.append(('buyer_spotcheck',{'entry':e,'county_kind':kind,'role':role,'buyer':b['buyer_display'],'named':named}))
     time.sleep(1.2)
