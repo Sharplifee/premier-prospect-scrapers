@@ -664,15 +664,23 @@ def scrape_wasatch_recorder():
     s.headers.update({'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Content-Type': 'application/json',
                       'Origin': 'https://docs.wasatch.utah.gov',
                       'Referer': 'https://docs.wasatch.utah.gov/PublicAccess/sample-cq/index.html'})
-    end = datetime.date.today(); start = end - datetime.timedelta(days=30)
-    body = {"QueryID": 114, "Keywords": [
-        {"ID": 287, "Value": start.strftime('%m/%d/%Y'), "KeywordOperator": ">="},
-        {"ID": 287, "Value": end.strftime('%m/%d/%Y'), "KeywordOperator": "<="}], "QueryLimit": 3000}
-    try:
-        r = s.post('https://docs.wasatch.utah.gov/PublicAccess/api/CustomQuery/KeywordSearch', json=body, timeout=180)
-        rows = r.json().get('Data', [])
-    except Exception as e:
-        log.error(f'[{slug}] search failed: {e}'); return 0
+    # WASATCH_DAYS lets a one-off backfill reach further back (searched in 30-day windows, each under the
+    # 3,000-row query cap); the daily run looks back 30 days and dedupe keeps the history.
+    total_days = int(os.environ.get('WASATCH_DAYS', '30'))
+    rows = []
+    for off in range(0, total_days, 30):
+        end = datetime.date.today() - datetime.timedelta(days=off); start = end - datetime.timedelta(days=min(30, total_days - off))
+        body = {"QueryID": 114, "Keywords": [
+            {"ID": 287, "Value": start.strftime('%m/%d/%Y'), "KeywordOperator": ">="},
+            {"ID": 287, "Value": end.strftime('%m/%d/%Y'), "KeywordOperator": "<="}], "QueryLimit": 3000}
+        try:
+            r = s.post('https://docs.wasatch.utah.gov/PublicAccess/api/CustomQuery/KeywordSearch', json=body, timeout=180)
+            got = r.json().get('Data', [])
+            if len(got) >= 3000: log.warning(f'[{slug}] {start}..{end} hit the 3,000-row cap; some documents in that window were not returned')
+            rows += got
+        except Exception as e:
+            log.error(f'[{slug}] search {start}..{end} failed: {e}')
+    if not rows: return 0
     signals, seen = [], set()
     for x in rows:
         line = re.sub(r'<[^>]+>', '', html.unescape(x.get('Name', '')))
