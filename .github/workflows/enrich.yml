@@ -29,7 +29,7 @@ jobs:
       NAME_LIMIT: '250'
       OBIT_LIMIT: '40'
       DIVORCE_LIMIT: '60'
-      BUYER_LIMIT: '30'
+      BUYER_LIMIT: '150'
       GEO_LIMIT: '2500'
       SL_LIMIT: '150'
       TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
@@ -53,6 +53,9 @@ jobs:
 
       - name: Parcel geometry (city, address, map point from the state parcel layers)
         run: timeout 25m python scrapers/parcel_geo.py || echo "geo step ended — continuing"
+
+      - name: Utah County recorder history (older warranty deeds for the buyer layers; resumes where it stopped)
+        run: timeout 15m python scrapers/utah_deed_backfill.py || echo "backfill step ended — continuing"
 
       - name: Jobs moving in and out (state incentive announcements + WARN layoff notices, by city)
         run: timeout 5m python scrapers/jobs_signals.py || echo "jobs step ended — continuing"

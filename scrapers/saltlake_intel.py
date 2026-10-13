@@ -66,6 +66,21 @@ def main(limit=60):
             requests.post(f"{SB}/rest/v1/pp_parcel_geo?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'county':'Salt Lake','address':d['address'],'lon':d['lon'],'lat':d['lat']},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         n+=1; log.info(f"  {x['owner_display'][:28]:28} → {d['parcel']} {str(d['address'])[:26]:26} ${d['value'] or 0:,}")
         time.sleep(0.8)
+    # Oct 13 2026 buyer parity: Salt Lake buyers (divorce / landlord court names) get the same owner search.
+    # Key the hit to the buyer so pp_compute_buyers can roll up address, value, map point and price band.
+    tried=set(x['buyer_key'] for x in requests.get(f"{SB}/rest/v1/pp_buyer_parcel_attempts?select=buyer_key&county=eq.Salt%20Lake&limit=20000",headers=H,timeout=60).json())
+    btodo=[b for b in requests.get(f"{SB}/rest/v1/pp_buyer_intel?select=buyer_key,buyer_display&counties=cs.%7B%22Salt%20Lake%22%7D&is_entity=is.false&parcel_serial=is.null&order=buyer_score.desc&limit=3000",headers=H,timeout=60).json() if b['buyer_key'] not in tried][:limit]
+    log.info(f'{len(btodo)} Salt Lake buyers to resolve'); bn=0
+    for b in btodo:
+        try: d=resolve(b['buyer_display'])
+        except Exception as e: log.warning(f"  {b['buyer_display'][:30]}: {type(e).__name__}"); continue
+        requests.post(f"{SB}/rest/v1/pp_buyer_parcel_attempts?on_conflict=buyer_key",json={'buyer_key':b['buyer_key'],'hits':1 if d else 0,'county':'Salt Lake'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        if not d: continue
+        requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'buyer_key':b['buyer_key'],'county':'Salt Lake','market_value':d['value'],'property_address':d['address'],'fetched_at':'now()'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        if d['lat'] and d['lon']:
+            requests.post(f"{SB}/rest/v1/pp_parcel_geo?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'county':'Salt Lake','address':d['address'],'lon':d['lon'],'lat':d['lat']},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        bn+=1; log.info(f"  buyer {b['buyer_display'][:22]:22} → {d['parcel']} {str(d['address'])[:26]:26} ${d['value'] or 0:,}")
+        time.sleep(0.8)
     requests.post(f"{SB}/rest/v1/rpc/pp_finish_parcel_geo",json={},headers=H,timeout=180)
-    log.info(f'resolved {n}/{len(todo)}'); return n
+    log.info(f'resolved {n}/{len(todo)} owners, {bn}/{len(btodo)} buyers'); return n
 if __name__=='__main__': main(int(os.environ.get('SL_LIMIT','60')))

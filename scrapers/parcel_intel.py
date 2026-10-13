@@ -13,6 +13,7 @@ One request per parcel; throttled; runs as a background job, never in the
 daily pipeline.
 """
 import os, re, json, time, logging, html, requests
+from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'); log=logging.getLogger('parcel')
 SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY']
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}
@@ -186,12 +187,19 @@ def resolve_buyer_parcels(limit):
     """What does this buyer actually own? Their parcels' assessed values define the
     price band they buy in — the basis for matching a seller to buyers who have
     already closed at that number. Utah County natural persons, exact-match only."""
-    rows=requests.get(f"{SB}/rest/v1/pp_buyer_intel?select=buyer_key,buyer_display&is_entity=is.false&counties=cs.{{Utah}}&parcels_known=is.null&order=buyer_score.desc&limit={limit}",headers=H,timeout=30).json()
+    # Oct 13 2026: pp_buyer_intel is rebuilt every night, so nothing written to it survives. pp_compute_buyers now
+    # derives parcels_known / price bands / address from pp_parcel_intel rows keyed to the buyer; this step only has to
+    # find those rows. Which buyers were already searched lives in pp_buyer_parcel_attempts (the old selector keyed on a
+    # NULL the compute writes as 0 and picked almost nobody). A miss is retried after 45 days: new deeds land in the index.
+    since=(datetime.utcnow()-timedelta(days=45)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    tried=set(x['buyer_key'] for x in requests.get(f"{SB}/rest/v1/pp_buyer_parcel_attempts?select=buyer_key&or=(hits.gt.0,tried_at.gt.{since})&limit=20000",headers=H,timeout=60).json())
+    rows=[r for r in requests.get(f"{SB}/rest/v1/pp_buyer_intel?select=buyer_key,buyer_display&is_entity=is.false&counties=cs.{{Utah}}&parcel_serial=is.null&order=buyer_score.desc,last_seen.desc&limit=3000",headers=H,timeout=30).json() if r['buyer_key'] not in tried][:limit]
     log.info(f'{len(rows)} Utah County buyers to resolve')
     n=0
+    def attempt(key,hits): requests.post(f"{SB}/rest/v1/pp_buyer_parcel_attempts?on_conflict=buyer_key",json={'buyer_key':key,'hits':hits,'county':'Utah','tried_at':datetime.utcnow().isoformat()+'Z'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
     for r in rows:
         q=index_name(r['buyer_display'])
-        if not q or ',' not in q: requests.patch(f"{SB}/rest/v1/pp_buyer_intel?buyer_key=eq.{requests.utils.quote(r['buyer_key'])}",json={'parcels_known':0},headers={**H,'Prefer':'return=minimal'},timeout=30); continue
+        if not q or ',' not in q: attempt(r['buyer_key'],0); continue
         try: s=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':q,'av_valid':'...','Submit':' Search '},timeout=45)
         except Exception as e: log.warning(f'  {q[:28]} {type(e).__name__}'); time.sleep(3); continue
         time.sleep(1.3)
@@ -205,15 +213,13 @@ def resolve_buyer_parcels(limit):
             d.pop('fetched_at'); d['buyer_key']=r['buyer_key']
             requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
             vals.append(d['market_value'])
-        body={'parcels_known':len(vals)}
-        if vals: vals.sort(); body.update({'price_band_low':vals[0],'price_band_high':vals[-1]})
-        requests.patch(f"{SB}/rest/v1/pp_buyer_intel?buyer_key=eq.{requests.utils.quote(r['buyer_key'])}",json=body,headers={**H,'Prefer':'return=minimal'},timeout=30)
-        if vals: n+=1; log.info(f"  {q[:30]:32} {len(vals)} parcel(s) ${vals[0]:,}–${vals[-1]:,}")
+        attempt(r['buyer_key'],len(vals))
+        if vals: vals.sort(); n+=1; log.info(f"  {q[:30]:32} {len(vals)} parcel(s) ${vals[0]:,}–${vals[-1]:,}")
         else: log.info(f"  {q[:30]:32} no exact owner match")
     log.info(f'resolved {n} buyer price bands'); return n
 
 def main(limit=60):
-    resolve_buyer_parcels(int(os.environ.get('BUYER_LIMIT','30')))
+    resolve_buyer_parcels(int(os.environ.get('BUYER_LIMIT','150')))
     resolve_divorces(int(os.environ.get('DIVORCE_LIMIT','40')))
     resolve_obituaries(int(os.environ.get('OBIT_LIMIT','40')))
     resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
