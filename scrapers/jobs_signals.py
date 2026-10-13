@@ -75,6 +75,8 @@ else:
 log.info(f'WARN: {n_warn} notices since {SINCE}')
 
 if rows:
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for x in rows: x['fetched_at'] = now   # so a merge on an existing row still shows when it was last checked
     r = requests.post(f"{SB}/rest/v1/pp_job_events?on_conflict=source,title", json=rows,
                       headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'}, timeout=60)
     log.info(f'saved {len(rows)} events: HTTP {r.status_code} {r.text[:200]}')
