@@ -857,7 +857,9 @@ def scrape_utah_recorder_unified():
     slug = 'utah-recorder-unified'
     log.info(f'[{slug}] starting')
     signals, seen = [], set()
-    for offset in (0, 200, 400, 600):
+    # Oct 14 2026: six pages, not four. The history backfill found 168 documents dated Oct 12-13 sitting at offsets
+    # 800-1000, i.e. the county recorded more than 800 documents between two morning sweeps and the sweep missed them.
+    for offset in (0, 200, 400, 600, 800, 1000):
         r = safe_get(
             'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
             params={'DocDesc': '', 'DateRange': '30', 'County': 'Utah', 'offset': offset},

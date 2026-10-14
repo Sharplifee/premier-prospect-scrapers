@@ -63,9 +63,13 @@ def main():
     inserted = 0; walked = 0; last_dates = None
     for _ in range(pages):
         if time.time() - t0 > budget: log.info('time budget reached'); break
-        r = R.safe_get('https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
-                       params={'DocDesc': '', 'DateRange': rng, 'County': 'Utah', 'offset': offset}, timeout=60)
-        if not r: log.warning(f'offset {offset} unreachable; stopping this run'); break
+        r = None
+        for attempt in range(3):   # deep offsets are slow on the county's ASP page; give each page three honest tries
+            r = R.safe_get('https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
+                           params={'DocDesc': '', 'DateRange': rng, 'County': 'Utah', 'offset': offset}, timeout=120)
+            if r: break
+            time.sleep(30)
+        if not r: log.warning(f'offset {offset} unreachable after 3 tries; stopping this run (resumes here tomorrow)'); break
         sigs, dates = parse_page(r.text)
         if not dates:
             log.info(f'offset {offset}: no rows — range exhausted'); done = True; break
