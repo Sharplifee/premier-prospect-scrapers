@@ -10,6 +10,11 @@ stranger's door. Writes pp_parcel_intel (parcel, value, address) and pp_parcel_g
 (the page's own lat/lon; city filled by pp_finish_parcel_geo point-in-polygon).
 """
 import os, re, html, time, logging, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'); log=logging.getLogger('slco')
 SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY']
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}

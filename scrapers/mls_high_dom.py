@@ -4,6 +4,11 @@ Premier Prospect™ — MLS high DOM
 Score: 75 | signal_type: high_dom_listing
 """
 import os, json, logging, hashlib, re, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 log = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ['SUPABASE_URL']

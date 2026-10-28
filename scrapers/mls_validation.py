@@ -16,6 +16,11 @@ Score modifiers:
 """
 import os, json, logging, hashlib, requests
 from datetime import datetime, timedelta
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 log = logging.getLogger(__name__)
 

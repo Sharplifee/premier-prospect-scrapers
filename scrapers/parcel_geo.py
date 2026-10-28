@@ -6,6 +6,11 @@ layer has no city field, so city comes from point-in-polygon against
 pp_municipalities in Postgres afterwards. Batched IN() queries, ~60 per call.
 """
 import os, re, json, time, logging, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'); log=logging.getLogger('geo')
 SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY']
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}

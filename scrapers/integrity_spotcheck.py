@@ -8,6 +8,11 @@ Nightly integrity gate.
 Exits non-zero on any failure so the workflow fails and is seen.
 """
 import os, sys, json, re, html, random, time, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY']
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}
 S=requests.Session(); S.headers['User-Agent']='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'

@@ -9,6 +9,11 @@ of people relocating is company-level:
 Only events in a city inside our four counties are kept; city → county comes from pp_municipalities. Never names a person.
 """
 import os, re, html, datetime, logging, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'); log = logging.getLogger('jobs')
 SB = os.environ['SUPABASE_URL'].rstrip('/'); KEY = os.environ['SUPABASE_SERVICE_KEY']
 H = {'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json'}

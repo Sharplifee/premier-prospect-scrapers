@@ -18,6 +18,11 @@ import os, re, sys, json, time, logging, requests
 sys.path.insert(0, os.path.dirname(__file__))
 import run_all as R
 from bs4 import BeautifulSoup
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 log = logging.getLogger('backfill'); logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 SB = os.environ['SUPABASE_URL'].rstrip('/'); KEY = os.environ['SUPABASE_SERVICE_KEY']

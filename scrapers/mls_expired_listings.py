@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Premier Prospect™ — MLS Expired Listings | Score 95 | signal_type: expired_listing"""
 import os, json, logging, hashlib, re, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 log = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ['SUPABASE_URL']

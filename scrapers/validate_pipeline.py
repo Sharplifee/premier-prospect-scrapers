@@ -11,6 +11,11 @@ Usage:
   VALIDATE_LIVE=1 python scrapers/validate_pipeline.py  # hit real Supabase
 """
 import os, sys, json, time, datetime, hashlib, logging
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 log = logging.getLogger('pp.validate')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')

@@ -12,6 +12,11 @@ knows the lead has been contacted and stops surfacing it as 'never contacted'.
 Runs after enrichment. Idempotent: a row is 'sent' or 'failed' exactly once.
 """
 import os, re, json, time, logging, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s'); log=logging.getLogger('outreach')
 SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY']
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}

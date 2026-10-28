@@ -8,6 +8,11 @@ Runs: After each scraper cycle, queues new Primed II leads not yet contacted
 """
 import os, json, logging, requests
 from datetime import datetime, timedelta
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 log = logging.getLogger(__name__)
 

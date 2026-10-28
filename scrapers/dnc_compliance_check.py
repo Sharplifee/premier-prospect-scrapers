@@ -7,6 +7,11 @@ SAN Registration: ftc.gov/donotcall — register at donotcall.gov/register.aspx
 This runs BEFORE vapi_outreach_trigger.py — blocks any number on the registry
 """
 import os, json, logging, requests
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 log = logging.getLogger(__name__)
 

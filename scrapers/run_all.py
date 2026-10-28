@@ -20,6 +20,11 @@ except ImportError as e:
     import logging as _log
     _log.getLogger('pp').warning(f"scrapers_realtime not loaded: {e}")
 from bs4 import BeautifulSoup
+try:
+    import eventlog as _eventlog; _eventlog.install(job=__file__)
+except Exception as _e:  # event log must never block a worker
+    pass
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('pp.scrapers')
@@ -290,6 +295,10 @@ HEADERS_LOG = {
 }
 
 def write_run_log(slug, count, status='success', error=None, duration=None, skipped=0):
+    try:
+        _eventlog.step(slug, status='ok' if status == 'success' else 'fail', signal_count=count,
+                       records_skipped=skipped, duration_seconds=duration, error=error)
+    except Exception: pass
     try:
         payload = {
             'source_slug': slug,
