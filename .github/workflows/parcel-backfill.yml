@@ -7,7 +7,8 @@ on:
     inputs:
       parcel_limit: { description: 'parcels to fetch this run', default: '2400' }
 
-concurrency: { group: pp-enrich, cancel-in-progress: false }
+# Own group: sharing pp-enrich let the next scheduled enrichment replace this run while it waited (GitHub keeps one pending run per group).
+concurrency: { group: pp-parcel-backfill, cancel-in-progress: false }
 
 jobs:
   backfill:
