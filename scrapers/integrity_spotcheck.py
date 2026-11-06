@@ -98,10 +98,14 @@ for b in random.sample(rec, min(3,len(rec))) + random.sample(mv, min(2,len(mv)))
     e,t=_fetch(entry)
     if not t: continue
     bchecked+=1
-    k=re.search(r'KIND OF INST:\s*([A-Z][A-Z ]{0,10}?)\s+-',t); kind=k.group(1).strip() if k else '?'
+    k=re.search(r'KIND OF INST:\s*([A-Z][A-Z ]{0,10}?)\s+-\s+(.{0,80}?)\s+FEES',t)
+    kind=k.group(1).strip() if k else '?'; desc=k.group(2) if k else ''
     role='GRANTOR' if as_seller else 'GRANTEE'
     seg=re.search(role+r'S?:?\s*(.{0,200})',t); named=bool(seg and _surname(b['buyer_display']) in seg.group(1))
-    ok = kind in (('WD','SP WD','QCD','Q CD') if _off(b) else ('WD','SP WD')) and named
+    # Any warranty-deed variant counts (WD, SP WD, C WD, "WD W - WARRANTY DEED WITH WATER", ...); quit claims too for off-title.
+    is_wd = kind in ('WD','SP WD','C WD') or 'WARRANTY DEED' in desc
+    is_qc = kind in ('QCD','Q CD') or 'QUIT CLAIM' in desc
+    ok = (is_wd or (_off(b) and is_qc)) and named
     print(f"  buyer entry {e} kind {kind!r:7} {role.lower()} names {_surname(b['buyer_display'])!r}: {'OK' if ok else 'MISMATCH'}")
     if not ok: fails.append(('buyer_spotcheck',{'entry':e,'county_kind':kind,'role':role,'buyer':b['buyer_display'],'named':named}))
     time.sleep(1.2)
