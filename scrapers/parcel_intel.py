@@ -239,7 +239,7 @@ def main(limit=60):
            f"&county=eq.Utah&order=conviction_score.desc,entity_key&limit={min(1000,owners-len(keys))}&offset={len(keys)}")
         page=[r['entity_key'] for r in requests.get(q,headers=H,timeout=60).json()]
         keys+=page
-        if len(page)<1000: break
+        if not page: break   # the API may cap a page below 1000; stop only on an empty page
     rows=[]
     for i in range(0,len(keys),60):
         ks=','.join('"'+k.replace('"','')+'"' for k in keys[i:i+60])
@@ -252,8 +252,8 @@ def main(limit=60):
     have=set(); off=0
     while True:
         page=requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=parcel_serial&order=parcel_serial&limit=1000&offset={off}&fetched_at=gte."+time.strftime('%Y-%m-%d',time.gmtime(time.time()-120*86400)),headers=H,timeout=60).json()
-        have.update(x['parcel_serial'] for x in page); off+=1000
-        if len(page)<1000: break
+        have.update(x['parcel_serial'] for x in page); off+=len(page)
+        if not page: break
     todo=[s for s in serials if s not in have][:limit]
     log.info(f'{len(todo)} parcels to fetch')
     n=0
