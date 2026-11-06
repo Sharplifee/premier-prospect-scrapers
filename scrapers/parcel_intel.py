@@ -243,8 +243,13 @@ def main(limit=60):
     rows=[]
     for i in range(0,len(keys),60):
         ks=','.join('"'+k.replace('"','')+'"' for k in keys[i:i+60])
-        rows+=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=parcel_serial&is_legacy=eq.false&is_institutional=eq.false"
-                           f"&parcel_serial=not.is.null&owner_key=in.({requests.utils.quote(ks)})",headers=H,timeout=30).json()
+        # Tax-list owners carry many signal rows each, so one batch can exceed the API's page cap — page it.
+        off=0
+        while True:
+            page=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=parcel_serial&is_legacy=eq.false&is_institutional=eq.false"
+                              f"&parcel_serial=not.is.null&owner_key=in.({requests.utils.quote(ks)})&order=id&limit=1000&offset={off}",headers=H,timeout=60).json()
+            if not page: break
+            rows+=page; off+=len(page)
     serials=[]; seen=set()
     for r in rows:
         s=r['parcel_serial']
