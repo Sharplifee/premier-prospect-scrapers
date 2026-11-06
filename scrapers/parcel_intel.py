@@ -231,9 +231,15 @@ def main(limit=60):
     # Parcels belonging to the HIGHEST-CONVICTION real owners first. Ordering by
     # raw signal score pulled a developer's row of identical lots to the front;
     # order by the owner's conviction and skip institutional rows instead.
-    q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key&contactable=is.true&resolved_flag=is.false"
-       f"&county=eq.Utah&order=conviction_score.desc&limit=300")
-    keys=[r['entity_key'] for r in requests.get(q,headers=H,timeout=30).json()]
+    # PARCEL_OWNERS widens the owner window (nightly: top 300; catch-up: every Utah lead). PostgREST caps a page
+    # at 1000 rows, so page through it.
+    owners=int(os.environ.get('PARCEL_OWNERS','300')); keys=[]
+    while len(keys)<owners:
+        q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key&contactable=is.true&resolved_flag=is.false"
+           f"&county=eq.Utah&order=conviction_score.desc,entity_key&limit={min(1000,owners-len(keys))}&offset={len(keys)}")
+        page=[r['entity_key'] for r in requests.get(q,headers=H,timeout=60).json()]
+        keys+=page
+        if len(page)<1000: break
     rows=[]
     for i in range(0,len(keys),60):
         ks=','.join('"'+k.replace('"','')+'"' for k in keys[i:i+60])
@@ -243,7 +249,11 @@ def main(limit=60):
     for r in rows:
         s=r['parcel_serial']
         if s and s not in seen and re.match(r'^\d{2}:\d{3}:\d{4}$',s): seen.add(s); serials.append(s)
-    have=set(x['parcel_serial'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=parcel_serial&fetched_at=gte."+time.strftime('%Y-%m-%d',time.gmtime(time.time()-120*86400)),headers=H,timeout=30).json())
+    have=set(); off=0
+    while True:
+        page=requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=parcel_serial&order=parcel_serial&limit=1000&offset={off}&fetched_at=gte."+time.strftime('%Y-%m-%d',time.gmtime(time.time()-120*86400)),headers=H,timeout=60).json()
+        have.update(x['parcel_serial'] for x in page); off+=1000
+        if len(page)<1000: break
     todo=[s for s in serials if s not in have][:limit]
     log.info(f'{len(todo)} parcels to fetch')
     n=0

@@ -1,0 +1,42 @@
+name: Parcel catch-up (Utah County)
+# One-off / on-demand catch-up: fetch assessed value + mailing address for EVERY Utah County lead whose parcel
+# is not yet in pp_parcel_intel (the nightly step only covers the top 300 owners, 80 parcels a run).
+# Highest-conviction leads first. Recomputes the queue and runs the integrity gate at the end.
+on:
+  workflow_dispatch:
+    inputs:
+      parcel_limit: { description: 'parcels to fetch this run', default: '2400' }
+
+concurrency: { group: pp-enrich, cancel-in-progress: false }
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      PARCEL_OWNERS: '20000'
+      PARCEL_LIMIT: ${{ github.event.inputs.parcel_limit || '2400' }}
+      BUYER_LIMIT: '0'
+      DIVORCE_LIMIT: '0'
+      OBIT_LIMIT: '0'
+      NAME_LIMIT: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Assessor parcel intel for every Utah County lead
+        run: timeout 130m python scrapers/parcel_intel.py
+      - name: Recompute convergence + caches
+        if: always()
+        run: |
+          H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
+          for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_map_and_perf_bt pp_refresh_kpi_cache; do
+            code=$(curl -s -o /tmp/r.txt -w "%{http_code}" -X POST "${H[@]}" "$SUPABASE_URL/rest/v1/rpc/$fn" -d '{}' --max-time 180)
+            echo "$fn -> $code $(head -c 40 /tmp/r.txt)"
+            [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
+          done
+      - name: Integrity gate
+        run: python scrapers/integrity_spotcheck.py
