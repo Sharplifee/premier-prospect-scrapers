@@ -1,0 +1,9 @@
+-- Applied live Nov 6 2026 by editing pp_compute_convergence in place.
+-- 88 Utah County tax-delinquency leads showed a blank owner name and were marked "NO CONTACT INFO" (-8 score)
+-- because raw_owner_name was '' (empty, not NULL), so coalesce(raw_owner_name, owner_norm) returned ''.
+-- Changed:
+--   max(coalesce(raw_owner_name, owner_norm)) as owner_display
+--     -> max(coalesce(nullif(trim(raw_owner_name),''), owner_norm)) as owner_display
+--   bool_or(coalesce(trim(coalesce(raw_owner_name, owner_norm)),'') <> '') as contactable
+--     -> bool_or(coalesce(nullif(trim(raw_owner_name),''), trim(owner_norm),'') <> '') as contactable
+-- Verified after recompute: 0 queue leads with a blank owner name; pp_integrity_check passed.
