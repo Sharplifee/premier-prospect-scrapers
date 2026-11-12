@@ -862,6 +862,20 @@ RECORDER_KOI_MAP = {
     'QCD':        ('family_transfer',    50, 'Quit claim deed'),
 }
 
+def _doc_page_kind(entry):
+    """Kind of Instrument as printed on the county's own document page ('RSUBTEE', 'SUB TEE', ...), or None."""
+    m = re.search(r'(\d+)[\s:\-]+(20\d\d)', str(entry))
+    if not m:
+        return None
+    r = safe_get('https://www.utahcounty.gov/LandRecords/document.asp',
+                 params={'avEntry': m.group(1), 'avYear': m.group(2)}, timeout=45)
+    if not r:
+        return None
+    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I))))
+    k = re.search(r'Kind of Inst:\s*([A-Z][A-Z ]{0,10}?)\s+-', t)
+    time.sleep(1)
+    return k.group(1).strip() if k else None
+
 def scrape_utah_recorder_unified():
     slug = 'utah-recorder-unified'
     log.info(f'[{slug}] starting')
@@ -892,6 +906,16 @@ def scrape_utah_recorder_unified():
             if not entry or entry in seen:
                 continue
             seen.add(entry)
+            # Nov 12 2026: the search list showed 'SUB TEE' for 6 of 542 documents whose own page says RSUBTEE / PRSUBTE
+            # (reconveyance = loan paid off). A paid-off loan must never read as a foreclosure step, so confirm the
+            # kind on the document page before storing a trustee substitution.
+            if koi in ('SUB TEE', 'SUBTEE'):
+                page_koi = _doc_page_kind(entry)
+                if page_koi and page_koi != koi:
+                    log.info(f'[{slug}] {entry}: list says {koi}, document page says {page_koi} — using the page')
+                    koi = page_koi
+                if koi not in RECORDER_KOI_MAP:
+                    continue
             sig_type, score, label = RECORDER_KOI_MAP[koi]
             # On a trustee deed / death affidavit the GRANTOR is the party of
             # interest (the foreclosed owner / the decedent).
