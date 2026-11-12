@@ -645,16 +645,18 @@ WASATCH_TYPES = {
     'NOTICE OF DEFAULT':               ('nod',                   88),
     'NOTICE OF TRUSTEE':               ('nts',                   99),   # prefix match
     'SUBSTITUTION OF TRUSTEE':         ('trustee_substitution',  88),   # exact only; "& RECONVEYA" variant is a payoff
-    'AFFIDAVIT OF SUCCESSOR TRUSTEE':  ('trustee_substitution',  88),
+    # Nov 12 2026: a successor-trustee affidavit is a FAMILY TRUST changing hands (often after a death), not a lender's
+    # foreclosure trustee — it was scored 88 and shown as 'creditor action'.
+    'AFFIDAVIT OF SUCCESSOR TRUSTEE':  ('trust_succession',      55),
     'LIS PENDENS':                     ('lis_pendens',           90),
     'NOTICE OF LIS PENDENS':           ('lis_pendens',           90),
     'AMENDED NOTICE LIS PENDENS':      ('lis_pendens',           90),
     'NOTICE OF LIEN':                  ('lien_judgment',         68),
     'NOTICE OF FEDERAL TAX LIEN':      ('lien_judgment',         70),
-    'NOTICE OF ROLL BACK TAX':         ('tax_delinquency',       55),
+    'NOTICE OF ROLL BACK TAX':         ('rollback_tax',          30),   # farmland-assessment rollback, NOT delinquency
     'DEATH CERTIFICATE':               ('death_affidavit',       85),
     'AFFIDAVIT OF DEATH':              ('death_affidavit',       85),
-    'NOTICE NOT TO OCCUPY':            ('code_violation',        60),   # condition distress
+    'NOTICE NOT TO OCCUPY':            ('occupancy_notice',      15),   # city hold on new construction until final inspection — not distress
     'TRUSTEE\'S DEED':                 ('trustee_deed',          92),   # kill signal
     'WARRANTY DEED':                   ('deed_transfer',         55),
     'SPECIAL WARRANTY DEED':           ('deed_transfer',         55),
@@ -663,7 +665,7 @@ WASATCH_TYPES = {
     # intent / resolution instruments surfaced by a 90-day type sweep (Sept 2026)
     'NOTICE OF INTEREST':              ('notice_of_interest',    45),   # a party asserts a claim or contract on the parcel
     'MEMORANDUM OF OPTION AGRMNT':     ('lease_option',          60),   # rare (1 / 90d) but unambiguous
-    'NOTICE OPEN BUILDING PERMIT':     ('code_violation',        50),   # unfinished work on the property
+    'NOTICE OPEN BUILDING PERMIT':     ('open_permit',           30),   # unfinished permit — not a violation
     'RELEASE OF LIS PENDENS':          ('lis_pendens_release',   25),   # litigation cleared — resolution, not distress
 }
 def scrape_wasatch_recorder():
@@ -707,7 +709,7 @@ def scrape_wasatch_recorder():
         # the party under pressure: grantee on lender-originated instruments, grantor otherwise
         # the party under pressure is the GRANTEE on anything filed AGAINST an owner —
         # including lis pendens, where the grantor is the plaintiff (HOA, lender)
-        owner = grantee if sig_type in ('nod', 'nts', 'trustee_substitution', 'lien_judgment', 'tax_delinquency', 'code_violation', 'lis_pendens', 'notice_of_interest') else grantor
+        owner = grantee if sig_type in ('nod', 'nts', 'trustee_substitution', 'lien_judgment', 'tax_delinquency', 'code_violation', 'lis_pendens', 'notice_of_interest', 'rollback_tax', 'occupancy_notice', 'open_permit') else grantor
         seen.add(entry)
         signals.append({
             'source_slug': slug, 'signal_type': sig_type, 'score': score,
@@ -737,7 +739,7 @@ SUMMIT_TYPES = {
     '326': ('lis_pendens',           90, 'Lis Pendens'),
     '150': ('lien_judgment',         68, 'Lien'),
     '155': ('lien_judgment',         70, 'Federal Tax Lien'),
-    '614': ('tax_delinquency',       55, 'Assessors Rollback Tax Lien'),
+    '614': ('rollback_tax',          30, 'Assessors Rollback Tax Lien'),   # farmland rollback, NOT delinquency
     '012': ('death_affidavit',       85, 'Death Certificate'),
     '007': ('affidavit',             40, 'Affidavit'),
     # Oct 2026 buyer parity: sales and purchase loans, so Summit buyers (move-up, repeat,
@@ -795,6 +797,9 @@ def scrape_summit_recorder():
             code = next((k for k, v in SUMMIT_TYPES.items() if v[2].lower() == typ_label.lower()), None)
             if not code: continue
             sig_type, score, _ = SUMMIT_TYPES[code]
+            # Summit marks a dead party '(DECEASED)'; an affidavit naming one is a death/estate filing, not a generic affidavit
+            if sig_type == 'affidavit' and '(DECEASED)' in ' '.join(cells).upper():
+                sig_type, score = 'death_affidavit', 85
             def after(lbl):
                 if lbl in cells:
                     i = cells.index(lbl); return cells[i + 1] if i + 1 < len(cells) else ''
@@ -805,7 +810,12 @@ def scrape_summit_recorder():
             parcel = next((c for c in cells if re.match(r'^[A-Z]{2,6}-[A-Z0-9-]+$', c)), None)
             # the OWNER is the party the distress is against: the grantee on NOD/NTS
             # (trustee → borrower), the grantee on a lien (claimant → owner).
-            owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency', 'lis_pendens') else grantor
+            owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency', 'lis_pendens', 'rollback_tax') else grantor
+            # Nov 12 2026: bulk timeshare / HOA filings name dozens of interval owners at once ("A, B, C, D, E, ...") on
+            # Westgate parcels — not a homeowner lead. Same timeshare rule as the deed feed, plus the truncated party list.
+            if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'lis_pendens') and (
+                    (parcel or '').startswith('WGC-') or '...' in (owner or '') or SUMMIT_TIMESHARE.search(grantor or '') or SUMMIT_TIMESHARE.search(grantee or '')):
+                seen.add(docnum); continue
             seen.add(docnum)
             signals.append({
                 'source_slug': slug, 'signal_type': sig_type, 'score': score,

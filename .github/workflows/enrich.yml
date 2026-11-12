@@ -65,6 +65,9 @@ jobs:
 
       # Enriched rows only reach the queue once convergence rolls them up.
       # Without this the enrichment scripts re-select the same owners tomorrow.
+      - name: Summit / Wasatch / Salt Lake owner mailing + value (county parcel layers; name-verified matches only)
+        run: COUNTY_LIMIT=400 timeout 20m python scrapers/county_parcel_intel.py || echo "county intel step ended — continuing"
+
       - name: Recompute convergence + caches
         run: |
           H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
