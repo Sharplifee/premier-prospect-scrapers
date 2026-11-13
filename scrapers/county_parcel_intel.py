@@ -192,6 +192,26 @@ def write(lead_key, county, c):
     return True
 
 
+# Nov 13 2026: 100 Summit parcels behind top-tier "estate" and "lien" leads belong to timeshare operators. The person on
+# the affidavit or HOA lien owned a week of a resort unit, not a home, so the lead is not a home seller. The assessor
+# owner is the proof; such signals are set aside (is_institutional) the same way the Westgate intervals were.
+TIMESHARE_OWNER = re.compile(r'MARRIOTT OWNERSHIP RESORTS|HILTON RESORTS|SUNRISE PARK CITY|GRAND SUMMIT RESORT|VIP CLUB|'
+                             r'SWEETWATER PROPERTIES|WESTGATE|VACATION (CLUB|OWNERSHIP|RESORT)|TIMESHARE|INTERVAL OWNERS', re.I)
+
+
+def set_aside_timeshare(key, cands):
+    n = 0
+    for c in cands:
+        if not TIMESHARE_OWNER.search(c.get('owner') or ''): continue
+        ser = c['serial'].replace('SUMMIT:', '')
+        log.info(f"    {ser} is owned by {c['owner'][:40]} (timeshare) — setting the lead's signals on it aside")
+        if DRY: n += 1; continue
+        r = requests.patch(f'{SB}/rest/v1/pp_scraper_signals?owner_key=eq.{requests.utils.quote(key)}&parcel_serial=eq.{requests.utils.quote(ser)}',
+                           json={'is_institutional': True}, headers={**H, 'Prefer': 'return=minimal'}, timeout=30)
+        n += r.status_code < 300
+    return n
+
+
 def run_county(county, leads, resolver, last_first, serials_by_lead=None):
     found = skipped = 0
     for i, ld in enumerate(leads):
@@ -199,6 +219,8 @@ def run_county(county, leads, resolver, last_first, serials_by_lead=None):
         cands = []
         if serials_by_lead and serials_by_lead.get(key):
             cands = summit_by_serial(sorted(serials_by_lead[key])[:10])
+            if set_aside_timeshare(key, cands):
+                cands = [c for c in cands if not TIMESHARE_OWNER.search(c.get('owner') or '')]
         if not pick(name, cands, last_first)[0]:
             for n in lead_names(name)[:2]:
                 cands += resolver(n); time.sleep(0.6)
@@ -225,7 +247,7 @@ def main():
         serials = None
         if county == 'Summit':
             serials = {}
-            for s in page('pp_scraper_signals?select=owner_key,parcel_serial&county=eq.Summit&is_legacy=eq.false&parcel_serial=not.is.null&order=id'):
+            for s in page('pp_scraper_signals?select=owner_key,parcel_serial&county=eq.Summit&is_legacy=eq.false&is_institutional=eq.false&parcel_serial=not.is.null&order=id'):
                 serials.setdefault(s['owner_key'], set()).add(s['parcel_serial'])
         resolver = {'Summit': summit_by_name, 'Wasatch': wasatch_by_name, 'Salt Lake': sl_by_name}[county]
         run_county(county, leads, resolver, last_first=(county != 'Salt Lake'), serials_by_lead=serials)
