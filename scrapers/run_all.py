@@ -813,8 +813,8 @@ def scrape_summit_recorder():
             owner = grantee if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'tax_delinquency', 'lis_pendens', 'rollback_tax') else grantor
             # Nov 12 2026: bulk timeshare / HOA filings name dozens of interval owners at once ("A, B, C, D, E, ...") on
             # Westgate parcels — not a homeowner lead. Same timeshare rule as the deed feed, plus the truncated party list.
-            if sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'lis_pendens') and (
-                    (parcel or '').startswith('WGC-') or '...' in (owner or '') or SUMMIT_TIMESHARE.search(grantor or '') or SUMMIT_TIMESHARE.search(grantee or '')):
+            if (parcel or '').startswith('WGC-') or sig_type in ('nts', 'nod', 'lien_judgment', 'trustee_substitution', 'lis_pendens') and (
+                    False or '...' in (owner or '') or SUMMIT_TIMESHARE.search(grantor or '') or SUMMIT_TIMESHARE.search(grantee or '')):
                 seen.add(docnum); continue
             seen.add(docnum)
             signals.append({
