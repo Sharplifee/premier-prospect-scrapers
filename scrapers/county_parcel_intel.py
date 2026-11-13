@@ -196,7 +196,8 @@ def write(lead_key, county, c):
 # the affidavit or HOA lien owned a week of a resort unit, not a home, so the lead is not a home seller. The assessor
 # owner is the proof; such signals are set aside (is_institutional) the same way the Westgate intervals were.
 TIMESHARE_OWNER = re.compile(r'MARRIOTT OWNERSHIP RESORTS|HILTON RESORTS|SUNRISE PARK CITY|GRAND SUMMIT RESORT|VIP CLUB|'
-                             r'SWEETWATER PROPERTIES|WESTGATE|VACATION (CLUB|OWNERSHIP|RESORT)|TIMESHARE|INTERVAL OWNERS', re.I)
+                             r'SWEETWATER PROPERTIES|SWEETWATER CONDOSHARE|CONDOSHARE|SECURITY PACIFIC FINANCIAL|PARK REGENCY|FIRST AMERICAN TRUST FSB|'
+                             r'WESTGATE|VACATION (CLUB|OWNERSHIP|RESORT)|TIMESHARE|INTERVAL OWNERS', re.I)
 
 
 def set_aside_timeshare(key, cands):
