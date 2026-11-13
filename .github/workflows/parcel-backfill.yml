@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       parcel_limit: { description: 'parcels to fetch this run', default: '2400' }
+      doc_limit: { description: 'stored recorder documents to give a proven parcel first (0 = skip)', default: '600' }
 
 # Own group: sharing pp-enrich let the next scheduled enrichment replace this run while it waited (GitHub keeps one pending run per group).
 concurrency: { group: pp-parcel-backfill, cancel-in-progress: false }
@@ -28,6 +29,10 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Proven parcels for stored recorder documents (county document pages)
+        if: ${{ (github.event.inputs.doc_limit || '600') != '0' }}
+        env: { DOC_LIMIT: "${{ github.event.inputs.doc_limit || '600' }}" }
+        run: timeout 40m python scrapers/utah_doc_backfill.py || echo "::warning::document-page parcel step ended early"
       - name: Assessor parcel intel for every Utah County lead
         run: timeout 130m python scrapers/parcel_intel.py
       - name: Recompute convergence + caches

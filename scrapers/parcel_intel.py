@@ -71,7 +71,7 @@ def resolve_parcels_by_name(limit):
     """For high-conviction Utah owners with NO parcel on any signal, find their parcels
     via the assessor owner-name search. EXACT-match only on the normalised name — an
     under-match is safe, a mis-match puts an agent at a stranger's house."""
-    q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key,owner_display&contactable=is.true&resolved_flag=is.false"
+    q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key,owner_display&resolved_flag=is.false"
        f"&county=eq.Utah&order=conviction_score.desc&limit=400")
     owners=requests.get(q,headers=H,timeout=30).json()
     have=set(x['owner_key'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&owner_key=not.is.null",headers=H,timeout=30).json())
@@ -235,7 +235,7 @@ def main(limit=60):
     # at 1000 rows, so page through it.
     owners=int(os.environ.get('PARCEL_OWNERS','300')); keys=[]
     while len(keys)<owners:
-        q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key&contactable=is.true&resolved_flag=is.false"
+        q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key&resolved_flag=is.false"
            f"&county=eq.Utah&order=conviction_score.desc,entity_key&limit={min(1000,owners-len(keys))}&offset={len(keys)}")
         page=[r['entity_key'] for r in requests.get(q,headers=H,timeout=60).json()]
         keys+=page

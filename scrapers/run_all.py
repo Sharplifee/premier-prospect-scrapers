@@ -872,24 +872,92 @@ RECORDER_KOI_MAP = {
     'QCD':        ('family_transfer',    50, 'Quit claim deed'),
 }
 
-def _doc_page_kind(entry):
-    """Kind of Instrument as printed on the county's own document page ('RSUBTEE', 'SUB TEE', ...), or None."""
+def _doc_page(entry):
+    """Fields printed on the county's own document page for 'NNNNNN:YYYY', or {} when unreachable.
+    kind = Kind of Inst code ('RSUBTEE', 'AF DC', ...); serials = every parcel serial the document lists;
+    tax_address = the tax-notice address written on the document; rec_party = who presented it for recording."""
     m = re.search(r'(\d+)[\s:\-]+(20\d\d)', str(entry))
     if not m:
-        return None
+        return {}
     r = safe_get('https://www.utahcounty.gov/LandRecords/document.asp',
                  params={'avEntry': m.group(1), 'avYear': m.group(2)}, timeout=45)
-    if not r:
-        return None
-    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I))))
-    k = re.search(r'Kind of Inst:\s*([A-Z][A-Z ]{0,10}?)\s+-', t)
     time.sleep(1)
-    return k.group(1).strip() if k else None
+    if not r:
+        return {}
+    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I))))
+    out = {}
+    k = re.search(r'Kind of Inst:\s*([A-Z][A-Z ]{0,10}?)\s+-', t)
+    if k: out['kind'] = k.group(1).strip()
+    sm = re.search(r'Serial Number\(s\):(.{0,400})', t)
+    if sm:
+        sers = list(dict.fromkeys(re.findall(r'\b\d{2}:\d{3}:\d{4}\b', sm.group(1))))
+        if sers: out['serials'] = sers
+    ta = re.search(r'Tax Address:\s*(.{5,120}?)\s+(?:Rec Party|Grantor|Mail|Pages|Abstracted|Serial|Kind)', t)
+    if ta and re.search(r'\d', ta.group(1)): out['tax_address'] = ta.group(1).strip(' |')
+    rp = re.search(r'Rec Party:\s*(.{2,80}?)\s+(?:Tax Address|Grantor|Mail|Pages|Abstracted|Serial|Kind|Consideration)', t)
+    if rp: out['rec_party'] = rp.group(1).strip()
+    lk = re.search(r'Tie Entry\(s\):(.{0,300}?)Abbv', t + ' Abbv')
+    if lk:
+        out['linked'] = [f'{a}:{b}' for a, b in re.findall(r'Entry\s+(\d+)\s+Year\s+(\d{4})', lk.group(1))]
+    return out
+
+def _street_key(a):
+    """House number + next two street tokens, normalised ('437 EAST 850 NORTH ...' -> '437 E 850')."""
+    a = re.sub(r'\b(NORTH|SOUTH|EAST|WEST)\b', lambda m: m.group(1)[0], (a or '').upper())
+    t = re.sub(r'\s+', ' ', re.sub(r'[^A-Z0-9 ]', ' ', a)).strip().split(' ')
+    return ' '.join(t[:3]) if t and t[0].isdigit() else None
+
+def _assessor_addresses(serial):
+    r = safe_get('https://www.utahcounty.gov/LandRecords/Property.asp', params={'av_serial': serial.replace(':', '')}, timeout=45)
+    time.sleep(1)
+    if not r: return None, None
+    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I))))
+    pa = re.search(r'Property Address:\s*(.*?)\s*Mailing Address:', t); ma = re.search(r'Mailing Address:\s*(.*?)\s*Acreage:', t)
+    return (pa.group(1).strip() if pa else None), (ma.group(1).strip() if ma else None)
+
+def _doc_parcel(entry, page=None):
+    """The parcel a recorded document is about, proven from the county's own records, or (None, why).
+    1) the serial printed on the document itself; 2) otherwise the serial on a document it ties to or releases
+    (an affidavit of death usually releases the decedent's vesting deed), accepted ONLY when the assessor's property
+    or mailing address for that parcel is the tax-notice address written on this document. No proof, no parcel."""
+    page = page if page is not None else _doc_page(entry)
+    if page.get('serials'):
+        return page['serials'][0], 'on document'
+    key = _street_key(page.get('tax_address'))
+    if not key or not page.get('linked'):
+        return None, 'no parcel on document'
+    for le in page['linked'][:2]:
+        lp = _doc_page(le)
+        for ser in (lp.get('serials') or [])[:3]:
+            prop, mail = _assessor_addresses(ser)
+            if key in (_street_key(prop), _street_key(mail)):
+                return ser, f'linked entry {le}, assessor address matches'
+    return None, 'linked parcel not confirmed'
+
+def _doc_page_kind(entry):
+    """Kind of Instrument as printed on the county's own document page, or None."""
+    return _doc_page(entry).get('kind')
+
+# Document kinds worth a page fetch at capture: the page names the parcel, which is how the lead gets an
+# assessor-confirmed mailing address and value. Ordinary deeds are skipped to keep the county load small.
+DOC_PAGE_KINDS = {'PR LP', 'PERREPD', 'AF DC', 'TEE D', 'N LN', 'M CHGCN', 'ND', 'CAN ND', 'SUB TEE', 'SUBTEE'}
 
 def scrape_utah_recorder_unified():
     slug = 'utah-recorder-unified'
     log.info(f'[{slug}] starting')
     signals, seen = [], set()
+    # Documents already stored need no page fetch (the dedupe hash is slug|owner|address).
+    known = set()
+    try:
+        off = 0
+        since = (datetime.datetime.utcnow() - datetime.timedelta(days=45)).strftime('%Y-%m-%d')
+        while True:
+            kr = SESSION.get(f"{SUPABASE_URL}/rest/v1/pp_scraper_signals?select=dedupe_hash&source_slug=eq.{slug}"
+                             f"&captured_at=gte.{since}&limit=1000&offset={off}", headers=HEADERS, timeout=30).json()
+            if not kr: break
+            known.update(x['dedupe_hash'] for x in kr); off += len(kr)
+    except Exception as e:
+        log.warning(f'[{slug}] could not load stored documents ({e}); fetching every page')
     # Oct 14 2026: six pages, not four. The history backfill found 168 documents dated Oct 12-13 sitting at offsets
     # 800-1000, i.e. the county recorded more than 800 documents between two morning sweeps and the sweep missed them.
     for offset in (0, 200, 400, 600, 800, 1000):
@@ -919,8 +987,10 @@ def scrape_utah_recorder_unified():
             # Nov 12 2026: the search list showed 'SUB TEE' for 6 of 542 documents whose own page says RSUBTEE / PRSUBTE
             # (reconveyance = loan paid off). A paid-off loan must never read as a foreclosure step, so confirm the
             # kind on the document page before storing a trustee substitution.
+            page = None
             if koi in ('SUB TEE', 'SUBTEE'):
-                page_koi = _doc_page_kind(entry)
+                page = _doc_page(entry)
+                page_koi = page.get('kind')
                 if page_koi and page_koi != koi:
                     log.info(f'[{slug}] {entry}: list says {koi}, document page says {page_koi} — using the page')
                     koi = page_koi
@@ -936,11 +1006,24 @@ def scrape_utah_recorder_unified():
             extra = {}
             if sig_type == 'death_affidavit' and grantee and not re.search(r'WHOM OF INTEREST|LLC|INC\b|BANK|MORTGAGE|CORP', grantee, re.I):
                 party, extra = grantee, {'decedent': grantor, 'party_role': 'successor'}
+            if page is None and koi in DOC_PAGE_KINDS:
+                own = clean_owner(clean_owner(party) if party else None)
+                if hashlib.md5(f"{slug}|{own or ''}|{clean_addr(f'Entry #{entry}') or ''}".encode()).hexdigest() not in known:
+                    page = _doc_page(entry)
+            page = page or {}
+            for f in ('serials', 'tax_address', 'rec_party'):
+                if page.get(f): extra[f] = page[f]
+            parcel = None
+            if page:
+                parcel, why = _doc_parcel(entry, page)
+                if parcel: extra['parcel_source'] = why
             signals.append({
                 'source_slug': slug, 'signal_type': sig_type, 'score': score,
                 'county': 'Utah', 'city': None,
                 'raw_owner_name': clean_owner(party) if party else None,
                 'raw_address': f'Entry #{entry}',
+                # The parcel the document itself names: lets the assessor lookup confirm mailing address and value.
+                'parcel_serial': parcel,
                 'raw_payload': json.dumps({
                     'koi': koi, 'label': label, 'entry': entry,
                     'rec_date': rec_dt, 'grantor': grantor, 'grantee': grantee, **extra,

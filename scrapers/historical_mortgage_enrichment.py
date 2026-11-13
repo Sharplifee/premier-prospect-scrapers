@@ -130,10 +130,10 @@ def oldest_outstanding(ptr):
     return best
 
 def main(limit=40):
-    # Highest-conviction, contactable owners with no loan data yet.
+    # Highest-conviction open owners with no loan data yet.
     q = (f'{SUPABASE_URL}/rest/v1/pp_entity_conviction'
          f'?select=entity_key,owner_display,conviction_score'
-         f'&contactable=is.true&resolved_flag=is.false'
+         f'&resolved_flag=is.false'
          f'&oldest_loan_years=is.null&county=eq.Utah'
          f'&order=conviction_score.desc&limit={limit}')
     targets = requests.get(q, headers=H, timeout=30).json()
