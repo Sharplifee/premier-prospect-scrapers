@@ -45,6 +45,9 @@ jobs:
       - name: Historical mortgage (oldest outstanding trust deed per owner)
         run: timeout 20m python scrapers/historical_mortgage_enrichment.py || echo "mortgage step ended (timeout or error) — continuing"
 
+      - name: Utah County documents → proven parcel (document page, or a linked document whose assessor address matches)
+        run: DOC_LIMIT=150 timeout 12m python scrapers/utah_doc_backfill.py || echo "document parcel step ended — continuing"
+
       - name: Assessor parcel intel (value, mailing address, absentee)
         run: timeout 20m python scrapers/parcel_intel.py || echo "parcel step ended (timeout or error) — continuing"
 

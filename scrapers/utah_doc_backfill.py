@@ -10,7 +10,7 @@ for new documents; this script fills in the ones already stored. Highest-convict
 
 Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, DOC_LIMIT (default 600), DRY=1 to print without writing.
 """
-import os, sys, json, logging, requests
+import os, sys, json, time, logging, requests
 sys.path.insert(0, os.path.dirname(__file__))
 import run_all
 
@@ -47,7 +47,9 @@ def main():
                          f'&signal_type=in.({",".join(TYPES)})&limit=1000&offset={off}', headers=H, timeout=60).json()
         if not r: break
         rows += r; off += len(r)
-    rows = [x for x in rows if x.get('owner_key') in conv]
+    # A document the county has not abstracted yet lists no parcel; it is re-checked a week later, not every night.
+    week_ago = time.strftime('%Y-%m-%d', time.gmtime(time.time() - 7 * 86400))
+    rows = [x for x in rows if x.get('owner_key') in conv and (payload(x).get('doc_checked') or '') < week_ago]
     rows.sort(key=lambda x: -conv[x['owner_key']])
     log.info(f'{len(rows)} stored distress documents with no parcel (open leads); fixing up to {LIMIT}')
     fixed = nopage = noserial = 0
@@ -60,7 +62,12 @@ def main():
             nopage += 1; continue
         parcel, why = run_all._doc_parcel(entry, page)
         if not parcel:
-            noserial += 1; log.info(f"  {x['signal_type']:18} {entry:12} {why}"); continue
+            noserial += 1; log.info(f"  {x['signal_type']:18} {entry:12} {why}")
+            if not DRY:
+                p['doc_checked'] = time.strftime('%Y-%m-%d')
+                requests.patch(f"{SB}/rest/v1/pp_scraper_signals?id=eq.{x['id']}", headers={**H, 'Prefer': 'return=minimal'},
+                               json={'raw_payload': json.dumps(p)}, timeout=30)
+            continue
         for f in ('serials', 'tax_address', 'rec_party'):
             if page.get(f): p[f] = page[f]
         p['parcel_source'] = why
