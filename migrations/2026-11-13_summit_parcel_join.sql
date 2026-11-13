@@ -26,3 +26,8 @@ begin
               where s.owner_key = c.entity_key and not s.is_legacy and pi.mailing_address = c.mailing_address)');
   execute n;
 end $$;
+
+-- Nov 13 2026 13:40 MST follow-up (applied live): the Summit join above attached parcel SH-316 to a Yates estate lead
+-- although the parcel now belongs to Kelly Donna R (sold), so the Kelly mailing address was shown as the Yates
+-- family's. Both Summit joins now also require that the surname on the parcel's own lead key appears in this lead's
+-- key (or the parcel has no lead): position(' ' || split_part(substr(pi.owner_key,10),' ',1) || ' ' in ' ' || substr(s.owner_key,10) || ' ') > 0
