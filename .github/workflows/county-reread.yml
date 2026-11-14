@@ -6,6 +6,7 @@ on:
     inputs:
       counties: { description: 'counties', default: 'Salt Lake,Wasatch' }
       dry:      { description: '1 = read and report only, write nothing', default: '1' }
+      gate_only: { description: '1 = skip the re-read, only run the integrity gate', default: '0' }
 concurrency: { group: pp-county-reread, cancel-in-progress: false }
 jobs:
   reread:
@@ -16,15 +17,17 @@ jobs:
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       COUNTIES: ${{ github.event.inputs.counties || 'Salt Lake,Wasatch' }}
       DRY: ${{ github.event.inputs.dry || '1' }}
+      GATE_ONLY: ${{ github.event.inputs.gate_only || '0' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: pip install -q requests
+      - run: pip install -q requests pdfplumber beautifulsoup4   # the integrity gate parses the county tax PDF
       - name: Re-read every parcel from the county
+        if: env.GATE_ONLY != '1'
         run: timeout 100m python scrapers/county_reread.py 2>&1 | tee out_reread.log
       - name: Save job output
-        if: always()
+        if: always() && env.GATE_ONLY != '1'
         uses: actions/upload-artifact@v4
         with:
           name: county-reread-output
@@ -32,7 +35,7 @@ jobs:
             out/county_reread_*.json
             out_reread.log
       - name: Recompute convergence + caches
-        if: env.DRY != '1'
+        if: env.DRY != '1' && env.GATE_ONLY != '1'
         run: |
           H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
           for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_map_and_perf_bt pp_refresh_kpi_cache; do
@@ -41,5 +44,5 @@ jobs:
             [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
           done
       - name: Integrity gate
-        if: env.DRY != '1'
+        if: env.DRY != '1' || env.GATE_ONLY == '1'
         run: python scrapers/integrity_spotcheck.py
