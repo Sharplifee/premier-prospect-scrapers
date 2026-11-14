@@ -236,7 +236,7 @@ def run(county):
         if why:
             stats['not_confirmed'] += 1; rec['status'] = 'not_confirmed'; rec['reason'] = why
             key = why.split(' "')[0].split(' (')[0]; reasons[key] = reasons.get(key, 0) + 1
-            recs.append(rec); continue
+            recs.append(rec); print(f"PARCEL {pid} | {lead[:40]} | NOT CONFIRMED | {why}", flush=True); continue
         body = {'mailing_address': c['mailing'], 'property_address': c.get('situs') or r['property_address'],
                 'is_absentee': absentee(c.get('situs') or r['property_address'], c['mailing']), 'fetched_at': now}
         value_ok = bool(c.get('value')) and c.get('year') == CURRENT_YEAR
@@ -253,6 +253,8 @@ def run(county):
         if not ok: stats['write_errors'] += 1
         rec.update({'status': 'confirmed', 'changed': changed, 'written': {k: body.get(k) for k in ('mailing_address', 'market_value', 'value_year')}})
         recs.append(rec)
+        print(f"PARCEL {pid} | {lead[:40]} | {'CHANGED' if changed else 'UNCHANGED'} | mailing {c['mailing'][:50]} | "
+              f"value {c.get('value') if value_ok else 'not confirmed'} ({c.get('year')}) | written={ok}", flush=True)
     stats['not_confirmed_reasons'] = reasons
     stats['dry_run'] = DRY; stats['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     fn = os.path.join(OUT, f"county_reread_{county.replace(' ', '_')}.json")
