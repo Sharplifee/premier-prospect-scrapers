@@ -10,9 +10,8 @@ Re-read EVERY parcel we hold for a county straight from the county, and keep onl
 
 A parcel is CONFIRMED only when the county's current owner name still matches the lead the row belongs to and the
 county has a mailing address. Confirmed rows get the county's mailing address, property address, 2026 value and a
-fresh fetched_at. A parcel the county cannot confirm is left out of the "confirmed" set with the reason; when the reason
-is that the county's owner is now someone else, the old mailing address is removed from the row (no address is better
-than a stranger's) and the old value is kept in the output file.
+fresh fetched_at. When the county owner carries the lead's surname (estate leads: spouse or heir now holds title) the
+row is confirmed with a note. A parcel the county cannot confirm is left unchanged and listed with the reason.
 
 Env: SUPABASE_URL, SUPABASE_SERVICE_KEY, COUNTIES (default "Salt Lake,Wasatch"), DRY=1 to write nothing.
 Output: out/county_reread_<county>.json (one record per parcel) and a printed summary.
@@ -51,12 +50,26 @@ def matches(lead, owner):
 def norm(s): return re.sub(r'\W', '', (s or '').upper())
 
 
+def same_family(lead, owners, county):
+    """Lead's surname appears as a whole word in the county owner (estate leads: the spouse or heir now holds title).
+    Wasatch recorder names are LAST FIRST; Salt Lake court names are FIRST LAST. Entities never qualify."""
+    from county_parcel_intel import toks, ENTITY
+    if ENTITY.search((lead or '').upper()): return False
+    t = toks(lead)
+    if len(t) < 2: return False
+    sur = t[0] if county == 'Wasatch' else t[-1]
+    return len(sur) > 2 and any(sur in set(toks(o)) for o in owners)
+
+
 # ── Salt Lake ──
 def sl_roll(ids):
     out = {}
-    for i in range(0, len(ids), 80):
-        chunk = ','.join(f"'{q(x)}'" for x in ids[i:i+80])
-        for r in arcgis(SL, f'parcel_id IN ({chunk})', 'parcel_id,own_name,care_of,own_addr,own_apt_num,own_citystate,own_zip,prop_location,total_full_mkt,tax_year', 200) or []:
+    # The county's server rejects long IN lists (non-JSON reply at 80 ids), so read 20 at a time.
+    for i in range(0, len(ids), 20):
+        chunk = ','.join(f"'{q(x)}'" for x in ids[i:i+20])
+        rows = arcgis(SL, f'parcel_id IN ({chunk})', 'parcel_id,own_name,care_of,own_addr,own_apt_num,own_citystate,own_zip,prop_location,total_full_mkt,tax_year', 100)
+        if rows is None: log.error(f'  Salt Lake tax roll unreadable for parcels {ids[i]}..{ids[min(i+19, len(ids)-1)]}')
+        for r in rows or []:
             g = lambda k: str(r.get(k) or '').strip()
             mail = ', '.join(x for x in [' '.join(x for x in [g('own_addr'), g('own_apt_num')] if x), ' '.join(x for x in [g('own_citystate'), g('own_zip')] if x)] if x)
             out[g('parcel_id')] = {'owner': g('own_name'), 'mailing': mail or None, 'situs': g('prop_location') or None,
@@ -84,7 +97,8 @@ def read_salt_lake(rows):
     for i, r in enumerate(rows):
         pid = r['parcel_serial']; c = dict(roll.get(pid) or {})
         (v, y), aowner = sl_assessor(pid)
-        c.update({'value': v, 'year': y, 'assessor_owner': aowner, 'source_value': 'SL Assessor parcel page', 'source_mail': 'SL tax roll layer'})
+        c.update({'value': v, 'year': y, 'assessor_owner': aowner, 'source_value': 'SL Assessor parcel page', 'source_mail': 'SL tax roll layer',
+                  'roll_read': pid in roll})
         out[pid] = c if roll.get(pid) or v else None
         if i % 50 == 0: log.info(f'  Salt Lake assessor pages read: {i}/{len(rows)}')
         time.sleep(0.3)
@@ -129,7 +143,7 @@ def run(county):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     recs, stats = [], {'parcels_held': len(rows), 'parcels_read': 0, 'confirmed': 0, 'value_confirmed': 0, 'changed': 0,
                        'mailing_changed': 0, 'value_changed': 0, 'unchanged': 0, 'not_confirmed': 0, 'value_not_confirmed': 0,
-                       'mailing_removed_owner_changed': 0, 'write_errors': 0}
+                       'confirmed_same_family': 0, 'write_errors': 0}
     reasons = {}
     for r in rows:
         pid, lead = r['parcel_serial'], lead_name(r)
@@ -142,16 +156,18 @@ def run(county):
             stats['parcels_read'] += 1
             rec['county'] = {k: c.get(k) for k in ('owner', 'assessor_owner', 'mailing', 'situs', 'value', 'year', 'roll_value', 'roll_year')}
             owner = c.get('owner') or c.get('assessor_owner') or ''
-            if not owner: why = 'county roll has no owner name for this parcel'
-            elif not (matches(lead, owner) or (c.get('assessor_owner') and matches(lead, c['assessor_owner']))): why = f'county owner is now "{owner[:60]}" — does not match the lead'
-            elif not c.get('mailing'): why = 'county has no mailing address on file'
+            owners = [o for o in (c.get('owner'), c.get('assessor_owner')) if o]
+            if c.get('roll_read') is False: why = 'county tax roll could not be read for this parcel (server error after 3 tries)'
+            elif not owner: why = 'county roll has no owner name for this parcel'
+            elif any(matches(lead, o) for o in owners): pass
+            elif same_family(lead, owners, county):
+                rec['owner_note'] = f'county owner is now "{owner[:60]}" — same surname as the lead (spouse/heir), mailing kept as the family\'s'
+                stats['confirmed_same_family'] += 1
+            else: why = f'county owner is now "{owner[:60]}" — does not match the lead (sold, renamed or different person); row left unchanged'
+            if not why and not c.get('mailing'): why = 'county has no mailing address on file'
         if why:
             stats['not_confirmed'] += 1; rec['status'] = 'not_confirmed'; rec['reason'] = why
-            key = why.split(' "')[0].split(' (got')[0]; reasons[key] = reasons.get(key, 0) + 1
-            if why.startswith('county owner is now') and r['mailing_address']:
-                if patch(pid, {'mailing_address': None, 'is_absentee': None, 'fetched_at': now}): stats['mailing_removed_owner_changed'] += 1
-                else: stats['write_errors'] += 1
-                rec['action'] = 'old mailing address removed (owner changed)'
+            key = why.split(' "')[0].split(' (')[0]; reasons[key] = reasons.get(key, 0) + 1
             recs.append(rec); continue
         body = {'mailing_address': c['mailing'], 'property_address': c.get('situs') or r['property_address'],
                 'is_absentee': absentee(c.get('situs') or r['property_address'], c['mailing']), 'fetched_at': now}
