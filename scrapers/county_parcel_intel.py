@@ -13,7 +13,7 @@ carries the same mailing address. A wrong address sends an agent's letter to a s
 Rows are written to pp_parcel_intel keyed to the lead (owner_key). Summit serials are namespaced 'SUMMIT:<serial>'
 so a parcel that changed hands is never joined to the other party on a recorded deed.
 """
-import os, re, sys, json, time, logging, requests
+import os, re, sys, html, json, time, logging, requests
 try:
     import eventlog as _eventlog; _eventlog.install(job=__file__)
 except Exception:
@@ -183,7 +183,33 @@ def page(path):
     return out
 
 
+# Nov 14 2026: the Summit map layer carries the PRIOR year's value (152 of 157 top-lead parcels differed from the
+# assessor's 2026 market value, avg 7.6%). The value written is the assessor's own current "Market (YYYY)" figure.
+_SUMMIT_TAX = None
+def summit_assessor_value(serial):
+    global _SUMMIT_TAX
+    B = 'https://property.summitcounty.org/eaglesoftware'
+    try:
+        if _SUMMIT_TAX is None:
+            _SUMMIT_TAX = requests.Session(); _SUMMIT_TAX.headers['User-Agent'] = 'Mozilla/5.0'
+            _SUMMIT_TAX.get(B + '/web/loginPOST.jsp?guest=true&submit=Public+Login', timeout=40)
+        ser = serial.replace('SUMMIT:', '')
+        r = _SUMMIT_TAX.get(B + '/taxweb/results.jsp', params={'ParcelNumID': ser, 'docSearch': 'Search'}, timeout=40)
+        for a in list(dict.fromkeys(re.findall(r'account\.jsp\?accountNum=(\w+)', r.text)))[:3]:
+            t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', _SUMMIT_TAX.get(B + '/taxweb/account.jsp', params={'accountNum': a}, timeout=40).text)))
+            pn = re.search(r'Parcel Number (\S+)', t)
+            m = re.search(r'Market \((20\d\d)\) \$([\d,]+)', t)
+            if pn and pn.group(1) == ser and m: return int(m.group(2).replace(',', '')), int(m.group(1))
+    except Exception as e:
+        log.warning(f'    Summit assessor value for {serial}: {e}')
+    return None, None
+
+
 def write(lead_key, county, c):
+    if county == 'Summit':
+        v, y = summit_assessor_value(c['serial'])
+        if v: c = {**c, 'value': v, 'year': y}
+        else: log.warning(f"    {c['serial']}: assessor value unavailable — keeping the map layer's prior-year value")
     row = {'parcel_serial': c['serial'], 'owner_key': lead_key, 'county': county, 'market_value': c['value'], 'value_year': c['year'],
            'property_address': c['situs'], 'mailing_address': c['mailing'], 'is_absentee': absentee(c['situs'], c['mailing'])}
     if DRY: log.info(f'    DRY write {json.dumps(row)[:220]}'); return True
