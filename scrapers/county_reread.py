@@ -141,7 +141,14 @@ def run_summit_values():
     stats = {'parcels_to_reread': len(rows), 'parcels_read': 0, 'value_written': 0, 'changed': 0, 'unchanged': 0,
              'not_confirmed': 0, 'owner_differs_from_lead_note': 0, 'write_errors': 0}
     reasons, recs = {}, []
+    # Stop cleanly before the workflow's hard limit so the summary and output file are always written; the next run
+    # resumes on its own because it only selects parcels that still lack a 2026 value.
+    deadline = time.time() + 60 * float(os.environ.get('MAX_MINUTES', '90'))
+    stats['stopped_early_for_time'] = False
     for i, r in enumerate(rows):
+        if time.time() > deadline:
+            stats['stopped_early_for_time'] = True; stats['parcels_left_for_next_run'] = len(rows) - i
+            log.info(f'  time budget reached after {i}/{len(rows)} parcels; the rest resume on the next run'); break
         pid, ser = r['parcel_serial'], r['parcel_serial'].replace('SUMMIT:', '')
         rec = {'parcel': pid, 'lead': lead_name(r), 'old': {'value': float(r['market_value']) if r['market_value'] is not None else None, 'year': r['value_year']}}
         why, got = None, None
@@ -168,7 +175,7 @@ def run_summit_values():
         if why:
             stats['not_confirmed'] += 1; rec.update({'status': 'not_confirmed', 'reason': why})
             k = why.split(' (')[0].split(':')[0]; reasons[k] = reasons.get(k, 0) + 1
-            recs.append(rec); continue
+            recs.append(rec); print(f"PARCEL {pid} | {rec['lead'][:40]} | NOT CONFIRMED | {why}", flush=True); continue
         if got.get('owner_block') and rec['lead'] and not matches(rec['lead'], got['owner_block']):
             stats['owner_differs_from_lead_note'] += 1; rec['owner_note'] = f"assessor owner block: {got['owner_block'][:80]}"
         changed = rec['old']['value'] != float(got['value']) or rec['old']['year'] != got['year']
@@ -176,6 +183,8 @@ def run_summit_values():
         stats['value_written'] += ok; stats['write_errors'] += not ok; stats['changed' if changed else 'unchanged'] += 1
         rec.update({'status': 'confirmed', 'changed': changed, 'written': {'market_value': got['value'], 'value_year': got['year']}})
         recs.append(rec)
+        print(f"PARCEL {pid} | {rec['lead'][:40]} | {'CHANGED' if changed else 'UNCHANGED'} | {rec['old']['value']} ({rec['old']['year']}) -> "
+              f"{got['value']} ({got['year']}) | written={ok}{' | ' + rec['owner_note'] if rec.get('owner_note') else ''}", flush=True)
         if i % 100 == 0: log.info(f'  Summit assessor pages read: {i}/{len(rows)}')
         time.sleep(0.3)
     stats['not_confirmed_reasons'] = reasons; stats['dry_run'] = DRY
