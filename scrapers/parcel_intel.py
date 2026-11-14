@@ -100,7 +100,7 @@ def resolve_parcels_by_name(limit):
         for serial in sorted(set(hits))[:4]:
             d=fetch(serial); time.sleep(1.4)
             if not d or d['market_value'] is None: continue
-            d.pop('fetched_at'); d['owner_key']=o['entity_key']
+            d['owner_key']=o['entity_key']
             w=requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
             if w.status_code<400: n+=1; log.info(f"  {nm[:30]:32} {serial} ${d['market_value']:,} {'ABSENTEE' if d['is_absentee'] else ''}")
     log.info(f'resolved {n} parcels by name'); return n
@@ -146,7 +146,7 @@ def resolve_obituaries(limit):
         for name,ser in hits[:4]:
             d=fetch(ser); time.sleep(1.4)
             if not d or d['market_value'] is None: continue
-            d.pop('fetched_at'); d['owner_key']=r['owner_key']
+            d['owner_key']=r['owner_key']
             requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         n+=1; log.info(f"  {q[:34]:36} ESTATE — {len(hits)} parcel(s), {hits[0][1]} ({hits[0][0][:26]})")
     log.info(f'promoted {n} obituaries to deceased_owner'); return n
@@ -184,7 +184,7 @@ def resolve_divorces(limit):
               'raw_address':f'Divorce — homeowner{" (marital home)" if household else ""} — parcel {serial}','raw_payload':json.dumps(pl)},headers={**H,'Prefer':'return=minimal'},timeout=30)
         if w.status_code>=400: log.error(f'  {spouses[0][:28]} promote {w.status_code} {w.text[:80]}'); continue
         d=fetch(serial); time.sleep(1.3)
-        if d and d['market_value']: d.pop('fetched_at'); d['owner_key']=r['owner_key']; requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        if d and d['market_value']: d['owner_key']=r['owner_key']; requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         n+=1; log.info(f"  {spouses[0][:30]:32} HOMEOWNER{' · marital home' if household else ''} {serial} filed {filed_year}{' $'+format(d['market_value'],',') if d and d['market_value'] else ''}")
     log.info(f'promoted {n} divorce filings to divorce_homeowner'); return n
 
@@ -215,7 +215,7 @@ def resolve_buyer_parcels(limit):
         for serial in serials:
             d=fetch(serial); time.sleep(1.3)
             if not d or not d['market_value'] or d['market_value']<20000: continue
-            d.pop('fetched_at'); d['buyer_key']=r['buyer_key']
+            d['buyer_key']=r['buyer_key']
             requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
             vals.append(d['market_value'])
         attempt(r['buyer_key'],len(vals))
@@ -265,7 +265,7 @@ def main(limit=60):
     for s in todo:
         d=fetch(s); time.sleep(1.4)
         if not d or d['market_value'] is None: log.info(f'  {s} no value'); continue
-        d.pop('fetched_at')
+
         w=requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         if w.status_code<400: n+=1; log.info(f"  {s} ${d['market_value']:,} {'ABSENTEE' if d['is_absentee'] else ''} {d['property_address'] or ''}"[:90])
         else: log.error(f'  {s} write {w.status_code} {w.text[:100]}')

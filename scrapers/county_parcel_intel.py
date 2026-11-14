@@ -211,7 +211,8 @@ def write(lead_key, county, c):
         if v: c = {**c, 'value': v, 'year': y}
         else: log.warning(f"    {c['serial']}: assessor value unavailable — keeping the map layer's prior-year value")
     row = {'parcel_serial': c['serial'], 'owner_key': lead_key, 'county': county, 'market_value': c['value'], 'value_year': c['year'],
-           'property_address': c['situs'], 'mailing_address': c['mailing'], 'is_absentee': absentee(c['situs'], c['mailing'])}
+           'property_address': c['situs'], 'mailing_address': c['mailing'], 'is_absentee': absentee(c['situs'], c['mailing']),
+           'fetched_at': 'now()'}   # Nov 14 2026: every county write stamps when it was read
     if DRY: log.info(f'    DRY write {json.dumps(row)[:220]}'); return True
     r = requests.post(f'{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial', json=row, headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'}, timeout=30)
     if r.status_code >= 400: log.error(f'    write {r.status_code} {r.text[:120]}'); return False
