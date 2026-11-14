@@ -128,6 +128,65 @@ def read_wasatch(rows):
     return out
 
 
+# ── Summit (value only): every parcel still carrying a prior-year value gets the Assessor's own "Market (2026)" figure
+# from the EagleWeb account page, matched on the exact parcel number. Mailing addresses are not touched here.
+def run_summit_values():
+    B = 'https://property.summitcounty.org/eaglesoftware'
+    tax = requests.Session(); tax.headers['User-Agent'] = 'Mozilla/5.0'
+    tax.get(B + '/web/loginPOST.jsp?guest=true&submit=Public+Login', timeout=40)
+    rows = page('pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,market_value,value_year&county=eq.Summit'
+                f'&or=(value_year.is.null,value_year.lt.{CURRENT_YEAR},market_value.is.null)&order=parcel_serial')
+    log.info(f'Summit: {len(rows)} parcels without a {CURRENT_YEAR} assessor value')
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    stats = {'parcels_to_reread': len(rows), 'parcels_read': 0, 'value_written': 0, 'changed': 0, 'unchanged': 0,
+             'not_confirmed': 0, 'owner_differs_from_lead_note': 0, 'write_errors': 0}
+    reasons, recs = {}, []
+    for i, r in enumerate(rows):
+        pid, ser = r['parcel_serial'], r['parcel_serial'].replace('SUMMIT:', '')
+        rec = {'parcel': pid, 'lead': lead_name(r), 'old': {'value': float(r['market_value']) if r['market_value'] is not None else None, 'year': r['value_year']}}
+        why, got = None, None
+        for attempt in range(3):
+            try:
+                res = tax.get(B + '/taxweb/results.jsp', params={'ParcelNumID': ser, 'docSearch': 'Search'}, timeout=40)
+                accts = list(dict.fromkeys(re.findall(r'account\.jsp\?accountNum=(\w+)', res.text)))
+                for a in accts[:3]:
+                    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', tax.get(B + '/taxweb/account.jsp', params={'accountNum': a}, timeout=40).text)))
+                    pn = re.search(r'Parcel Number (\S+)', t)
+                    if not pn or pn.group(1) != ser: continue
+                    m = re.search(r'Market \((20\d\d)\) \$([\d,]+)', t)
+                    o = re.search(r' Name (.+?) Market \(', t)
+                    got = {'account': a, 'year': int(m.group(1)) if m else None, 'value': int(m.group(2).replace(',', '')) if m else None,
+                           'owner_block': o.group(1).strip()[:160] if o else None}
+                    break
+                if got is None: why = f'assessor has no account page for this parcel number ({len(accts)} search results)'
+                break
+            except Exception as e:
+                why = f'assessor site error after 3 tries: {type(e).__name__}'; time.sleep(4)
+        if got:
+            stats['parcels_read'] += 1; rec['county'] = got
+            if got['year'] != CURRENT_YEAR or not got['value']: why = f"assessor shows no {CURRENT_YEAR} market value (year {got['year']}, value {got['value']})"
+        if why:
+            stats['not_confirmed'] += 1; rec.update({'status': 'not_confirmed', 'reason': why})
+            k = why.split(' (')[0].split(':')[0]; reasons[k] = reasons.get(k, 0) + 1
+            recs.append(rec); continue
+        if got.get('owner_block') and rec['lead'] and not matches(rec['lead'], got['owner_block']):
+            stats['owner_differs_from_lead_note'] += 1; rec['owner_note'] = f"assessor owner block: {got['owner_block'][:80]}"
+        changed = rec['old']['value'] != float(got['value']) or rec['old']['year'] != got['year']
+        ok = patch(pid, {'market_value': got['value'], 'value_year': got['year'], 'fetched_at': now})
+        stats['value_written'] += ok; stats['write_errors'] += not ok; stats['changed' if changed else 'unchanged'] += 1
+        rec.update({'status': 'confirmed', 'changed': changed, 'written': {'market_value': got['value'], 'value_year': got['year']}})
+        recs.append(rec)
+        if i % 100 == 0: log.info(f'  Summit assessor pages read: {i}/{len(rows)}')
+        time.sleep(0.3)
+    stats['not_confirmed_reasons'] = reasons; stats['dry_run'] = DRY
+    stats['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    json.dump({'county': 'Summit', 'summary': stats, 'parcels': recs}, open(os.path.join(OUT, 'county_reread_Summit.json'), 'w'), indent=1)
+    print('\n=== Summit SUMMARY ===\n' + json.dumps(stats, indent=1))
+    for x in recs:
+        if x['status'] == 'not_confirmed': print(f"  NOT CONFIRMED {x['parcel']:24} {x['lead'][:34]:36} {x['reason']}")
+    return stats
+
+
 def patch(pid, body):
     if DRY: return True
     r = requests.patch(f'{SB}/rest/v1/pp_parcel_intel?parcel_serial=eq.{requests.utils.quote(pid)}', json=body,
@@ -198,4 +257,4 @@ def run(county):
 
 if __name__ == '__main__':
     for county in [c.strip() for c in os.environ.get('COUNTIES', 'Salt Lake,Wasatch').split(',') if c.strip()]:
-        run(county)
+        run_summit_values() if county == 'Summit' else run(county)
