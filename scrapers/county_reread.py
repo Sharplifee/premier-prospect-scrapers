@@ -196,6 +196,130 @@ def run_summit_values():
     return stats
 
 
+# ── Summit FULL re-read: every held parcel, owner + mailing + 2026 value from the Assessor's EagleWeb account page ──
+# Same standard as Salt Lake and Wasatch: a parcel is confirmed only when a lead name is still on title; confirmed rows
+# get the Assessor's mailing address, 2026 value and a fresh fetched_at; anything else is left unchanged and listed.
+# Resumes on its own: it only selects parcels not yet fetched today (Denver), and stops cleanly at MAX_MINUTES.
+SUMMIT_STOP = {'DECEASED', 'SUC', 'TRUSTEE', 'TRUSTRE', 'JR', 'SR', 'III', 'II', 'JT', 'TR', 'TEE', 'THE', 'AND', 'LIVING',
+               'TRUST', 'FAMILY', 'REVOCABLE', 'IRA', 'CUSTODIAN', 'PLAN', 'LLC', 'INC', 'CO', 'TRS', 'ETAL', 'H/W'}
+
+
+def summit_toks(s):
+    return [w for w in re.findall(r'[A-Z]+', (s or '').upper()) if len(w) > 2 and w not in SUMMIT_STOP]
+
+
+def summit_page(sess, B, ser):
+    res = sess.get(B + '/taxweb/results.jsp', params={'ParcelNumID': ser, 'docSearch': 'Search'}, timeout=40)
+    accts = list(dict.fromkeys(re.findall(r'account\.jsp\?accountNum=(\w+)', res.text)))
+    for a in accts[:3]:
+        raw = sess.get(B + '/taxweb/account.jsp', params={'accountNum': a}, timeout=40).text
+        txt = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', raw)))
+        pn = re.search(r'Parcel Number (\S+)', txt)
+        if not pn or pn.group(1) != ser: continue
+        m = re.search(r'Market \((20\d\d)\) \$([\d,]+)', txt)
+        i = raw.find('<b>Name</b>'); j = raw.find('<b>Market</b>', i)
+        block = raw[i:j] if i >= 0 and j > i else ''
+        owners = [html.unescape(re.sub(r'<[^>]+>', ' ', x)).strip() for x in re.findall(r'<b>Name</b>(.*?)</td>', block, re.S)]
+        addr_cells = [x for x in re.findall(r'<b></b>(.*?)</td>', block, re.S)]
+        lines = []
+        for cell in addr_cells:
+            for ln in re.split(r'<br\s*/?>', cell):
+                ln = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', ln))).strip()
+                if ln and not ln.upper().startswith('C/O'): lines.append(ln)
+        mailing = None
+        if len(lines) >= 2:
+            city = re.sub(r'\s*,\s*', ' ', lines[-1]).strip()
+            mailing = f"{' '.join(lines[:-1])}, {re.sub(r' +', ' ', city)}"
+        return {'account': a, 'year': int(m.group(1)) if m else None, 'value': int(m.group(2).replace(',', '')) if m else None,
+                'owners': owners, 'mailing': mailing}
+    return {'error': f'assessor has no account page for this parcel number ({len(accts)} search results)'}
+
+
+def run_summit_full():
+    import threading, concurrent.futures as cf
+    B = 'https://property.summitcounty.org/eaglesoftware'
+    today_start = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7))).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = today_start.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    held = page('pp_parcel_intel?select=parcel_serial&county=eq.Summit&order=parcel_serial')
+    rows = page('pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,mailing_address,market_value,value_year,property_address'
+                f'&county=eq.Summit&or=(fetched_at.is.null,fetched_at.lt.{since})&order=parcel_serial')
+    log.info(f'Summit full re-read: {len(held)} parcels held, {len(rows)} not yet read today (since {since})')
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    stats = {'parcels_held': len(held), 'parcels_to_read_this_run': len(rows), 'parcels_read': 0, 'confirmed': 0, 'value_confirmed': 0,
+             'changed': 0, 'mailing_changed': 0, 'value_changed': 0, 'unchanged': 0, 'not_confirmed': 0, 'value_not_confirmed': 0,
+             'write_errors': 0}
+    reasons, recs, lock = {}, [], threading.Lock()
+    deadline = time.time() + 60 * float(os.environ.get('MAX_MINUTES', '90'))
+    local = threading.local()
+
+    def sess():
+        if not getattr(local, 's', None):
+            local.s = requests.Session(); local.s.headers['User-Agent'] = 'Mozilla/5.0'
+            local.s.get(B + '/web/loginPOST.jsp?guest=true&submit=Public+Login', timeout=40)
+        return local.s
+
+    def one(r):
+        if time.time() > deadline: return None
+        pid, ser = r['parcel_serial'], r['parcel_serial'].replace('SUMMIT:', '')
+        lead = lead_name(r)
+        rec = {'parcel': pid, 'lead': lead, 'old': {'mailing': r['mailing_address'], 'value': float(r['market_value']) if r['market_value'] is not None else None, 'year': r['value_year']}}
+        got = None
+        for attempt in range(3):
+            try:
+                got = summit_page(sess(), B, ser); break
+            except Exception as e:
+                got = {'error': f'assessor site error after 3 tries: {type(e).__name__}'}; local.s = None; time.sleep(4)
+        line = None
+        with lock:
+            if 'error' in got:
+                stats['not_confirmed'] += 1; why = got['error']
+                rec.update({'status': 'not_confirmed', 'reason': why}); reasons[why.split(' (')[0].split(':')[0]] = reasons.get(why.split(' (')[0].split(':')[0], 0) + 1
+                recs.append(rec); return f"PARCEL {pid} | {lead[:40]} | NOT CONFIRMED | {why}"
+            stats['parcels_read'] += 1; rec['county'] = got
+            owner = ' / '.join(got['owners'])
+            shared = sorted(set(summit_toks(lead)) & set(summit_toks(owner)))
+            if not lead or not shared or not got['mailing']:
+                why = (f'county owner is now "{owner}" — no lead name on title (sold, renamed or different person); row left unchanged'
+                       if lead and not shared else 'assessor page has no mailing address' if lead else 'no lead linked to this parcel')
+                stats['not_confirmed'] += 1; rec.update({'status': 'not_confirmed', 'reason': why})
+                k = why.split(' "')[0].split(' (')[0]; reasons[k] = reasons.get(k, 0) + 1
+                recs.append(rec); return f"PARCEL {pid} | {lead[:40]} | NOT CONFIRMED | {why}"
+        value_ok = got['year'] == CURRENT_YEAR and bool(got['value'])
+        body = {'mailing_address': got['mailing'], 'is_absentee': absentee(r.get('property_address'), got['mailing']), 'fetched_at': now}
+        if value_ok: body.update({'market_value': got['value'], 'value_year': got['year']})
+        ok = patch(pid, body)
+        mail_ch = norm(rec['old']['mailing']) != norm(got['mailing'])
+        val_ch = bool(value_ok and (rec['old']['value'] != float(got['value']) or rec['old']['year'] != got['year']))
+        with lock:
+            stats['confirmed'] += 1; stats['value_confirmed'] += value_ok; stats['value_not_confirmed'] += not value_ok
+            stats['mailing_changed'] += mail_ch; stats['value_changed'] += val_ch
+            stats['changed' if (mail_ch or val_ch) else 'unchanged'] += 1; stats['write_errors'] += not ok
+            rec.update({'status': 'confirmed', 'shared_names': shared, 'changed': mail_ch or val_ch,
+                        'written': {k: body.get(k) for k in ('mailing_address', 'market_value', 'value_year')}})
+            if not value_ok: rec['value_reason'] = f"assessor shows no {CURRENT_YEAR} market value (year {got['year']}, value {got['value']})"
+            recs.append(rec)
+        return (f"PARCEL {pid} | {lead[:40]} | {'CHANGED' if (mail_ch or val_ch) else 'UNCHANGED'} | mailing {got['mailing'][:50]} | "
+                f"value {got['value'] if value_ok else 'not confirmed'} ({got['year']}) | written={ok}")
+
+    workers = int(os.environ.get('SUMMIT_WORKERS', '4'))
+    done = 0
+    with cf.ThreadPoolExecutor(workers) as ex:
+        for line in ex.map(one, rows):
+            if line is None: continue
+            done += 1; print(line, flush=True)
+            if done % 100 == 0: log.info(f'  Summit parcels read: {done}/{len(rows)}')
+    stats['stopped_early_for_time'] = done < len(rows)
+    if stats['stopped_early_for_time']: stats['parcels_left_for_next_run'] = len(rows) - done
+    stats['not_confirmed_reasons'] = reasons; stats['dry_run'] = DRY
+    stats['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    json.dump({'county': 'Summit', 'mode': 'full', 'summary': stats, 'parcels': recs}, open(os.path.join(OUT, 'county_reread_Summit.json'), 'w'), indent=1)
+    print('\n=== Summit (full) SUMMARY ===\n' + json.dumps(stats, indent=1))
+    for x in sorted(recs, key=lambda x: x['parcel']):
+        if x['status'] == 'not_confirmed': print(f"  NOT CONFIRMED {x['parcel']:24} {x['lead'][:34]:36} {x['reason']}")
+        elif x.get('value_reason'): print(f"  VALUE NOT CONFIRMED {x['parcel']:24} {x['lead'][:34]:36} {x['value_reason']}")
+    return stats
+
+
 def patch(pid, body):
     if DRY: return True
     r = requests.patch(f'{SB}/rest/v1/pp_parcel_intel?parcel_serial=eq.{requests.utils.quote(pid)}', json=body,
@@ -268,4 +392,6 @@ def run(county):
 
 if __name__ == '__main__':
     for county in [c.strip() for c in os.environ.get('COUNTIES', 'Salt Lake,Wasatch').split(',') if c.strip()]:
-        run_summit_values() if county == 'Summit' else run(county)
+        if county == 'Summit-full': run_summit_full()
+        elif county == 'Summit': run_summit_values()
+        else: run(county)
