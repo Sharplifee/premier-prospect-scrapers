@@ -229,7 +229,7 @@ def summit_page(sess, B, ser):
         mailing = None
         if len(lines) >= 2:
             city = re.sub(r'\s*,\s*', ' ', lines[-1]).strip()
-            mailing = f"{' '.join(lines[:-1])}, {re.sub(r' +', ' ', city)}"
+            mailing = f"{', '.join(lines[:-1])}, {re.sub(r' +', ' ', city)}"   # each county address line kept as its own segment (PO BOX 748, 1031 WOODSIDE AVE, ...)
         return {'account': a, 'year': int(m.group(1)) if m else None, 'value': int(m.group(2).replace(',', '')) if m else None,
                 'owners': owners, 'mailing': mailing}
     return {'error': f'assessor has no account page for this parcel number ({len(accts)} search results)'}
