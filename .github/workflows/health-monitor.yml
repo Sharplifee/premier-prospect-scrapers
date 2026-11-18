@@ -19,6 +19,8 @@ permissions:
 
 jobs:
   health-check:
+    # After enrichment, run only for the scheduled nightly run, so a re-run this job starts can't re-trigger it in a loop.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
