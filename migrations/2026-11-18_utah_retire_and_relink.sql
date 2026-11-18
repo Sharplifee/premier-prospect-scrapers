@@ -1,0 +1,16 @@
+-- Nov 18 2026 (Denver), applied via SQL by Claude. Recorded here for history; already live.
+-- 1. Utah sold-home retirements (114 leads) through pp_resolved_override.
+--    Explicit list: pp_utah_retire_20261118 (113 + Olson Micah). Inputs: pp_utah_owner_mm_20261118 (213 parcels),
+--    pp_utah_mm_leads_20261118 (151 live leads). Backups: pp_backup_override_20261118c (77 rows), pp_snap_conviction_20261118_g.
+--    Kept as family/survivor/own entity (14): pp_family_keep_log.
+-- 2. Utah ended-parcel re-link (36 old serials -> 32 successor rows) in pp_parcel_intel.
+--    Explicit list: pp_utah_relink_20261118. Backup: pp_backup_utah_relink_20261118 (45 rows: 36 old + 9 existing successors).
+--    Not re-linked, flagged: pp_utah_successor_flags_20261118 (55).
+-- Undo:
+--   delete from pp_resolved_override where entity_key in (select entity_key from pp_utah_retire_20261118);
+--   delete from pp_parcel_intel where parcel_serial in (select new_serial from pp_utah_relink_20261118)
+--     and parcel_serial not in (select parcel_serial from pp_backup_utah_relink_20261118);
+--   update pp_parcel_intel p set market_value=b.market_value, value_year=b.value_year, property_address=b.property_address,
+--     mailing_address=b.mailing_address, is_absentee=b.is_absentee, fetched_at=b.fetched_at, owner_key=b.owner_key
+--     from pp_backup_utah_relink_20261118 b where b.parcel_serial=p.parcel_serial;
+--   then run county-reread.yml with counties=none (recompute + integrity gate).
