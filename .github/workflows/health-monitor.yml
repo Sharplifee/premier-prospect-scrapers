@@ -8,6 +8,10 @@ on:
     - cron: '41 14 * * *'   # 7:41 AM MST
     - cron: '41 13 * * *'   # 7:41 AM MDT
   workflow_dispatch:
+  # Event-driven backup: GitHub queues scheduled runs for hours, so also check right after the nightly enrichment finishes.
+  workflow_run:
+    workflows: ['Enrichment (nightly)']
+    types: [completed]
 
 permissions:
   contents: read
