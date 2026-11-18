@@ -393,7 +393,8 @@ def run(county):
 
 if __name__ == '__main__':
     for county in [c.strip() for c in os.environ.get('COUNTIES', 'Salt Lake,Wasatch').split(',') if c.strip()]:
-        if county == 'Summit-full': run_summit_full()
+        if county == 'none': log.info('COUNTIES=none: no re-read; recompute + integrity gate only')
+        elif county == 'Summit-full': run_summit_full()
         elif county.startswith('Summit-full:'): run_summit_full([x.strip() for x in county.split(':', 1)[1].split('|') if x.strip()])
         elif county == 'Summit': run_summit_values()
         else: run(county)
