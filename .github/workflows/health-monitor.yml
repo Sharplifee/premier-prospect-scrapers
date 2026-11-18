@@ -4,8 +4,9 @@ on:
   schedule:
     # 8:00 AM Mountain Time. Two UTC entries cover MST (UTC-7) and MDT (UTC-6);
     # only one fires on any given day. The dedupe check below prevents double-execution.
-    - cron: '0 15 * * *'   # 8:00 AM MST
-    - cron: '0 14 * * *'   # 8:00 AM MDT
+    # Off-peak minute: GitHub delayed the top-of-hour runs by ~7 hours (Nov 17 fired at 3:07 PM and 3:46 PM MT).
+    - cron: '41 14 * * *'   # 7:41 AM MST
+    - cron: '41 13 * * *'   # 7:41 AM MDT
   workflow_dispatch:
 
 permissions:
