@@ -340,11 +340,17 @@ def utah_page(sess, ser):
     if seg:
         for spec, name in re.findall(r'(\d{4}(?:\.\.\.|NV|-\d{4})?)\s+(.+?)(?=\s\d{4}(?:\.\.\.|NV|-\d{4})?\s|$)', seg.group(1)):
             if spec.endswith('...') and name.strip() not in owners: owners.append(name.strip())
+    ended = None
+    if seg and not owners:   # no open-ended owner row: the parcel record stops (retired, split or renumbered)
+        rows_ = re.findall(r'(\d{4})(?:\.\.\.|NV|-(\d{4}))?\s+(.+?)(?=\s\d{4}(?:\.\.\.|NV|-\d{4})?\s|$)', seg.group(1))
+        if rows_:
+            last = max(int(e or y) for y, e, _ in rows_)
+            ended = {'year': last, 'last_owners': sorted({n.strip() for y, e, n in rows_ if int(e or y) == last})}
     mv = re.search(r'Market Value\s+(\d{4})\s+((?:\$[\d,]+\s+){4,})', t)
     vals = re.findall(r'\$([\d,]+)', mv.group(2)) if mv else []
     ma = re.search(r'Mailing Address:\s*(.*?)\s*Acreage:', t)
     return {'year': int(mv.group(1)) if mv else None, 'value': int(vals[-1].replace(',', '')) if vals else None,
-            'owners': owners, 'mailing': (ma.group(1).strip() if ma else None) or None}
+            'owners': owners, 'mailing': (ma.group(1).strip() if ma else None) or None, 'ended': ended}
 
 
 def run_utah_full(only=None):
@@ -355,6 +361,10 @@ def run_utah_full(only=None):
     sel = 'pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,mailing_address,market_value,value_year,property_address&county=eq.Utah'
     rows = page(sel + (f'&parcel_serial=in.({",".join(only)})' if only else f'&or=(fetched_at.is.null,fetched_at.lt.{since})') + '&order=parcel_serial')
     log.info(f'Utah full re-read: {len(held)} parcels held, {len(rows)} to read (since {since})')
+    leads_by_parcel = {}
+    for x in page('rpc/pp_parcel_lead_keys?p_county=Utah&order=parcel_serial,owner_key'):
+        leads_by_parcel.setdefault(x['parcel_serial'], []).append(x['owner_key'].split(':', 2)[-1])
+    log.info(f'  lead names found through recorded filings for {len(leads_by_parcel)} parcels')
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     stats = {'parcels_held': len(held), 'parcels_to_read_this_run': len(rows), 'parcels_read': 0, 'confirmed': 0, 'value_confirmed': 0,
              'changed': 0, 'mailing_changed': 0, 'value_changed': 0, 'unchanged': 0, 'not_confirmed': 0, 'value_not_confirmed': 0,
@@ -370,7 +380,7 @@ def run_utah_full(only=None):
 
     def one(r):
         if time.time() > deadline: return None
-        pid = r['parcel_serial']; lead = lead_name(r)
+        pid = r['parcel_serial']; lead = lead_name(r) or ' / '.join(leads_by_parcel.get(r['parcel_serial'], []))
         rec = {'parcel': pid, 'lead': lead, 'old': {'mailing': r['mailing_address'], 'value': float(r['market_value']) if r['market_value'] is not None else None, 'year': r['value_year']}}
         got = None
         for attempt in range(3):
@@ -387,7 +397,8 @@ def run_utah_full(only=None):
             owner = ' / '.join(got['owners'])
             shared = sorted(set(utah_toks(lead)) & set(utah_toks(owner)))
             if not lead or not got['owners'] or not shared or not got['mailing']:
-                why = ('county page lists no current owner' if not got['owners'] else
+                why = ((f"county record for this parcel ends in {got['ended']['year']} (retired, split or renumbered); last owner listed: {' / '.join(got['ended']['last_owners'])[:80]}"
+                        if got.get('ended') else 'county page lists no current owner') if not got['owners'] else
                        f'county owner is now "{owner[:90]}" — no lead name on title (sold, renamed or different person); row left unchanged'
                        if lead and not shared else 'county page has no mailing address' if lead else 'no lead linked to this parcel')
                 stats['not_confirmed'] += 1; rec.update({'status': 'not_confirmed', 'reason': why})
