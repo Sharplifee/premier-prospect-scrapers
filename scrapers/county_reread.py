@@ -321,6 +321,113 @@ def run_summit_full(only=None):
     return stats
 
 
+UTAH_STOP = SUMMIT_STOP | {'PERREP', 'SUCTEE', 'DEC', 'AKA', 'EST', 'ESTATE', 'PERSONAL', 'REPRESENTATIVE'}
+
+
+def utah_toks(s):
+    return [w for w in re.findall(r'[A-Z]+', (s or '').upper()) if len(w) > 2 and w not in UTAH_STOP]
+
+
+def utah_page(sess, ser):
+    """Utah County Land Records Property.asp: current owners (open-ended '2025...' rows), mailing, market value."""
+    r = sess.get('https://www.utahcounty.gov/LandRecords/Property.asp', params={'av_serial': ser.replace(':', '')}, timeout=45)
+    if r.status_code != 200: raise IOError(f'HTTP {r.status_code}')
+    t = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I)
+    t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', t)))
+    if 'Serial Number' not in t: return {'error': 'county has no property page for this serial (retired, split or renumbered)'}
+    seg = re.search(r'Photos Documents (.*?) ----- Real Estate Values', t)
+    owners = []
+    if seg:
+        for spec, name in re.findall(r'(\d{4}(?:\.\.\.|NV|-\d{4})?)\s+(.+?)(?=\s\d{4}(?:\.\.\.|NV|-\d{4})?\s|$)', seg.group(1)):
+            if spec.endswith('...') and name.strip() not in owners: owners.append(name.strip())
+    mv = re.search(r'Market Value\s+(\d{4})\s+((?:\$[\d,]+\s+){4,})', t)
+    vals = re.findall(r'\$([\d,]+)', mv.group(2)) if mv else []
+    ma = re.search(r'Mailing Address:\s*(.*?)\s*Acreage:', t)
+    return {'year': int(mv.group(1)) if mv else None, 'value': int(vals[-1].replace(',', '')) if vals else None,
+            'owners': owners, 'mailing': (ma.group(1).strip() if ma else None) or None}
+
+
+def run_utah_full(only=None):
+    import threading, concurrent.futures as cf
+    today_start = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7))).replace(hour=0, minute=0, second=0, microsecond=0)
+    since = today_start.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    held = page('pp_parcel_intel?select=parcel_serial&county=eq.Utah&order=parcel_serial')
+    sel = 'pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,mailing_address,market_value,value_year,property_address&county=eq.Utah'
+    rows = page(sel + (f'&parcel_serial=in.({",".join(only)})' if only else f'&or=(fetched_at.is.null,fetched_at.lt.{since})') + '&order=parcel_serial')
+    log.info(f'Utah full re-read: {len(held)} parcels held, {len(rows)} to read (since {since})')
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    stats = {'parcels_held': len(held), 'parcels_to_read_this_run': len(rows), 'parcels_read': 0, 'confirmed': 0, 'value_confirmed': 0,
+             'changed': 0, 'mailing_changed': 0, 'value_changed': 0, 'unchanged': 0, 'not_confirmed': 0, 'value_not_confirmed': 0,
+             'write_errors': 0}
+    reasons, recs, lock = {}, [], threading.Lock()
+    deadline = time.time() + 60 * float(os.environ.get('MAX_MINUTES', '90'))
+    local = threading.local()
+
+    def sess():
+        if not getattr(local, 's', None):
+            local.s = requests.Session(); local.s.headers['User-Agent'] = 'Mozilla/5.0'
+        return local.s
+
+    def one(r):
+        if time.time() > deadline: return None
+        pid = r['parcel_serial']; lead = lead_name(r)
+        rec = {'parcel': pid, 'lead': lead, 'old': {'mailing': r['mailing_address'], 'value': float(r['market_value']) if r['market_value'] is not None else None, 'year': r['value_year']}}
+        got = None
+        for attempt in range(3):
+            try:
+                got = utah_page(sess(), pid); break
+            except Exception as e:
+                got = {'error': f'county site error after 3 tries: {type(e).__name__} {e}'[:120]}; local.s = None; time.sleep(5)
+        with lock:
+            if 'error' in got:
+                stats['not_confirmed'] += 1; why = got['error']; k = why.split(' (')[0].split(':')[0]
+                rec.update({'status': 'not_confirmed', 'reason': why}); reasons[k] = reasons.get(k, 0) + 1
+                recs.append(rec); return f"PARCEL {pid} | {lead[:40]} | NOT CONFIRMED | {why}"
+            stats['parcels_read'] += 1; rec['county'] = got
+            owner = ' / '.join(got['owners'])
+            shared = sorted(set(utah_toks(lead)) & set(utah_toks(owner)))
+            if not lead or not got['owners'] or not shared or not got['mailing']:
+                why = ('county page lists no current owner' if not got['owners'] else
+                       f'county owner is now "{owner[:90]}" — no lead name on title (sold, renamed or different person); row left unchanged'
+                       if lead and not shared else 'county page has no mailing address' if lead else 'no lead linked to this parcel')
+                stats['not_confirmed'] += 1; rec.update({'status': 'not_confirmed', 'reason': why})
+                k = why.split(' "')[0].split(' (')[0]; reasons[k] = reasons.get(k, 0) + 1
+                recs.append(rec); return f"PARCEL {pid} | {lead[:40]} | NOT CONFIRMED | {why}"
+        value_ok = got['year'] == CURRENT_YEAR and bool(got['value'])
+        body = {'mailing_address': got['mailing'], 'is_absentee': absentee(r.get('property_address'), got['mailing']), 'fetched_at': now}
+        if value_ok: body.update({'market_value': got['value'], 'value_year': got['year']})
+        ok = patch(pid, body)
+        mail_ch = (rec['old']['mailing'] or '') != got['mailing']
+        val_ch = bool(value_ok and (rec['old']['value'] != float(got['value']) or rec['old']['year'] != got['year']))
+        with lock:
+            stats['confirmed'] += 1; stats['value_confirmed'] += value_ok; stats['value_not_confirmed'] += not value_ok
+            stats['mailing_changed'] += mail_ch; stats['value_changed'] += val_ch
+            stats['changed' if (mail_ch or val_ch) else 'unchanged'] += 1; stats['write_errors'] += not ok
+            rec.update({'status': 'confirmed', 'shared_names': shared, 'changed': mail_ch or val_ch,
+                        'written': {k: body.get(k) for k in ('mailing_address', 'market_value', 'value_year')}})
+            if not value_ok: rec['value_reason'] = f"county shows no {CURRENT_YEAR} market value (year {got['year']}, value {got['value']})"
+            recs.append(rec)
+        return (f"PARCEL {pid} | {lead[:40]} | {'CHANGED' if (mail_ch or val_ch) else 'UNCHANGED'} | mailing {got['mailing'][:50]} | "
+                f"value {got['value'] if value_ok else 'not confirmed'} ({got['year']}) | written={ok}")
+
+    done = 0
+    with cf.ThreadPoolExecutor(int(os.environ.get('UTAH_WORKERS', '4'))) as ex:
+        for line in ex.map(one, rows):
+            if line is None: continue
+            done += 1; print(line, flush=True)
+            if done % 200 == 0: log.info(f'  Utah parcels read: {done}/{len(rows)}')
+    stats['stopped_early_for_time'] = done < len(rows)
+    if stats['stopped_early_for_time']: stats['parcels_left_for_next_run'] = len(rows) - done
+    stats['not_confirmed_reasons'] = reasons; stats['dry_run'] = DRY
+    stats['finished_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    json.dump({'county': 'Utah', 'mode': 'full', 'summary': stats, 'parcels': recs}, open(os.path.join(OUT, 'county_reread_Utah.json'), 'w'), indent=1)
+    print('\n=== Utah (full) SUMMARY ===\n' + json.dumps(stats, indent=1))
+    for x in sorted(recs, key=lambda x: x['parcel']):
+        if x['status'] == 'not_confirmed': print(f"  NOT CONFIRMED {x['parcel']:24} {x['lead'][:34]:36} {x['reason']}")
+        elif x.get('value_reason'): print(f"  VALUE NOT CONFIRMED {x['parcel']:24} {x['lead'][:34]:36} {x['value_reason']}")
+    return stats
+
+
 def patch(pid, body):
     if DRY: return True
     r = requests.patch(f'{SB}/rest/v1/pp_parcel_intel?parcel_serial=eq.{requests.utils.quote(pid)}', json=body,
@@ -395,6 +502,8 @@ if __name__ == '__main__':
     for county in [c.strip() for c in os.environ.get('COUNTIES', 'Salt Lake,Wasatch').split(',') if c.strip()]:
         if county == 'none': log.info('COUNTIES=none: no re-read; recompute + integrity gate only')
         elif county == 'Summit-full': run_summit_full()
+        elif county == 'Utah-full': run_utah_full()
+        elif county.startswith('Utah-full:'): run_utah_full([x.strip() for x in county.split(':', 1)[1].split('|') if x.strip()])
         elif county.startswith('Summit-full:'): run_summit_full([x.strip() for x in county.split(':', 1)[1].split('|') if x.strip()])
         elif county == 'Summit': run_summit_values()
         else: run(county)
