@@ -346,6 +346,8 @@ def utah_page(sess, ser):
         if rows_:
             last = max(int(e or y) for y, e, _ in rows_)
             ended = {'year': last, 'last_owners': sorted({n.strip() for y, e, n in rows_ if int(e or y) == last})}
+            if last >= CURRENT_YEAR:   # '2026' / '2027NV' rows are the current (or next-roll) owners, not an ended parcel
+                owners, ended = ended['last_owners'], None
     mv = re.search(r'Market Value\s+(\d{4})\s+((?:\$[\d,]+\s+){4,})', t)
     vals = re.findall(r'\$([\d,]+)', mv.group(2)) if mv else []
     ma = re.search(r'Mailing Address:\s*(.*?)\s*Acreage:', t)
