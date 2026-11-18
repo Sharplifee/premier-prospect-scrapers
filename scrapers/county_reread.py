@@ -235,14 +235,15 @@ def summit_page(sess, B, ser):
     return {'error': f'assessor has no account page for this parcel number ({len(accts)} search results)'}
 
 
-def run_summit_full():
+def run_summit_full(only=None):
     import threading, concurrent.futures as cf
     B = 'https://property.summitcounty.org/eaglesoftware'
     today_start = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=-7))).replace(hour=0, minute=0, second=0, microsecond=0)
     since = today_start.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     held = page('pp_parcel_intel?select=parcel_serial&county=eq.Summit&order=parcel_serial')
-    rows = page('pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,mailing_address,market_value,value_year,property_address'
-                f'&county=eq.Summit&or=(fetched_at.is.null,fetched_at.lt.{since})&order=parcel_serial')
+    rows = page('pp_parcel_intel?select=parcel_serial,owner_key,buyer_key,mailing_address,market_value,value_year,property_address' +
+                (f'&county=eq.Summit&parcel_serial=in.({",".join("SUMMIT:"+x for x in only)})&order=parcel_serial' if only else
+                 f'&county=eq.Summit&or=(fetched_at.is.null,fetched_at.lt.{since})&order=parcel_serial'))
     log.info(f'Summit full re-read: {len(held)} parcels held, {len(rows)} not yet read today (since {since})')
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     stats = {'parcels_held': len(held), 'parcels_to_read_this_run': len(rows), 'parcels_read': 0, 'confirmed': 0, 'value_confirmed': 0,
@@ -393,5 +394,6 @@ def run(county):
 if __name__ == '__main__':
     for county in [c.strip() for c in os.environ.get('COUNTIES', 'Salt Lake,Wasatch').split(',') if c.strip()]:
         if county == 'Summit-full': run_summit_full()
+        elif county.startswith('Summit-full:'): run_summit_full([x.strip() for x in county.split(':', 1)[1].split('|') if x.strip()])
         elif county == 'Summit': run_summit_values()
         else: run(county)
