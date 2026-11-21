@@ -37,8 +37,16 @@ def main():
     app = {}
     for k in leads:
         rows = requests.get(f'{SB}/rest/v1/pp_conviction_queue', headers=HA, timeout=30,
-                            params={'entity_key': f'eq.{k}', 'select': 'entity_key,conviction_score,mailing_address,mailing_confirmed,contactable,lead_label,value_label'}).json()
+                            params={'entity_key': f'eq.{k}', 'select': 'entity_key,conviction_score,mailing_address,mailing_confirmed,contactable,lead_label,value_label,parcel_match'}).json()
         app[k] = rows[0] if rows else None
+    # the call the iOS lead list makes (pp_app_queue), searched by each lead's name — proves the fields the app decodes
+    for k in leads:
+        name = k.split(':', 2)[2]
+        rows = requests.post(f'{SB}/rest/v1/rpc/pp_app_queue', headers={**HA, 'Content-Type': 'application/json'}, timeout=60,
+                             json={'p_limit': 50, 'p_search': name, 'p_min_docs': 1}).json()
+        hit = next((r for r in (rows if isinstance(rows, list) else []) if r.get('entity_key') == k), None)
+        if app.get(k) is not None:
+            app[k]['app_queue_parcel_match'] = hit.get('parcel_match', 'MISSING') if hit else 'NOT IN APP QUEUE'
     from playwright.sync_api import sync_playwright
     sess = {'access_token': tok, 'refresh_token': '', 'expires_at': int(time.time() * 1000) + 3000 * 1000, 'user': {'id': s['user']['id']}}
     out, errs = [], []
