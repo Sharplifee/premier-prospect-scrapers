@@ -39,3 +39,12 @@ delete from pp_top_tier_hold where entity_key in (select entity_key from pp_back
 --    End-to-end logging test by throwaway device b494b320 on the Beckstead lead (outcomes 50, 51; lifecycle row; deal 8; agent row).
 --    All 5 rows backed up to pp_backup_e2e_test_20261120 (tbl, row_data jsonb), then deleted by explicit ID. Beckstead back to 'new', 0 touches.
 --    Auth user b494b320 and the append-only event_log entries 334525-334529 left in place on purpose.
+
+-- 7. pp_mailing_from_small_filing_parcels_20261120 (~10 PM MT)
+--    Gap: 289 Utah tax-delinquent leads had an assessor mailing address on the parcel named in their own filing,
+--    but parcel_roll only read parcels over $20,000, so the address was dropped and the lead had no contact path.
+--    Change in pp_compute_convergence.parcel_roll: the two filing-parcel branches accept any valued parcel;
+--    assessed_value, property_address and absentee_verified still use only parcels over $20,000 (scores unchanged);
+--    the mailing address prefers a parcel over $20,000, then a filing parcel, then value.
+--    Snapshot: pp_snap_conviction_20261120b. Old def: pp_function_backup.
+--    Undo: re-execute the pre-change def from pp_function_backup, then recompute.
