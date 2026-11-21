@@ -122,8 +122,16 @@ def resolve_parcels_by_name(limit):
             if not d or d['market_value'] is None: continue
             d['owner_key']=o['entity_key']
             w=requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+            if w.status_code<400: link_owner(serial,'Utah',o['entity_key'],'exact name on Utah County NameSearch')
             if w.status_code<400: n+=1; log.info(f"  {nm[:30]:32} {serial} ${d['market_value']:,} {'ABSENTEE' if d['is_absentee'] else ''}")
     log.info(f'resolved {n} parcels by name'); return n
+
+def link_owner(serial,county,key,note):
+    """Nov 21 2026: record that this lead is on the parcel's title without taking the parcel from another lead.
+    pp_parcel_intel keeps one owner_key; a trigger there keeps the first owner when a co-owner is written."""
+    requests.post(f"{SB}/rest/v1/pp_parcel_owner_link?on_conflict=parcel_serial,owner_key",
+                  json={'parcel_serial':serial,'county':county,'owner_key':key,'active':True,'note':note},
+                  headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
 
 def obit_to_index(raw):
     """'Roger Orvel Ladle' → 'LADLE, ROGER ORVEL'. Strips memorial prefixes and suffixes."""

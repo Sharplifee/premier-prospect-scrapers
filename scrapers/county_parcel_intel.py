@@ -214,8 +214,23 @@ def write(lead_key, county, c):
            'property_address': c['situs'], 'mailing_address': c['mailing'], 'is_absentee': absentee(c['situs'], c['mailing']),
            'fetched_at': 'now()'}   # Nov 14 2026: every county write stamps when it was read
     if DRY: log.info(f'    DRY write {json.dumps(row)[:220]}'); return True
+    # Nov 21 2026: a parcel can be on several leads (joint tenants, name variants). Never take it from another lead:
+    # the parcel row keeps its first owner_key (trigger pp_parcel_owner_keep), and every name-verified lead gets a link.
+    prev = requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&parcel_serial=eq.{requests.utils.quote(c['serial'])}",
+                        headers=H, timeout=30).json()
+    prev_key = (prev[0].get('owner_key') if prev else None) or None
     r = requests.post(f'{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial', json=row, headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'}, timeout=30)
     if r.status_code >= 400: log.error(f'    write {r.status_code} {r.text[:120]}'); return False
+    links = [(lead_key, f"name-verified on {county} owner record: {(c.get('owner') or '')[:80]}")]
+    # the earlier lead stays linked while its surname is still on the county owner record (co-owner, not a sale)
+    if prev_key and prev_key != lead_key:
+        sur = prev_key.split(':', 2)[-1].split(' ')[0]
+        if sur and re.search(r'\b' + re.escape(sur) + r'\b', (c.get('owner') or '').upper()):
+            links.append((prev_key, f"still on {county} owner record with {lead_key}"))
+    for k, note in links:
+        requests.post(f'{SB}/rest/v1/pp_parcel_owner_link?on_conflict=parcel_serial,owner_key',
+                      json={'parcel_serial': c['serial'], 'county': county, 'owner_key': k, 'active': True, 'note': note},
+                      headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'}, timeout=30)
     return True
 
 
