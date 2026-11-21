@@ -1,0 +1,21 @@
+-- Nov 21 2026 — record of changes applied to lbvaosyfikkpvcwksiph (via the Supabase migration tool), with undo steps.
+
+-- 1. pp_browser_check_cleanup_20261121: throwaway device d8d40acb pp_agents row backed up to pp_backup_e2e_test_20261120, deleted by ID.
+-- 2. pp_fenley_keep_west_retire_20261121
+--    Fenley kept: 20:068:0019 sold to Justin Thelin, but Mary Dagmar & John Fenley still own 05:011:0012, 06:024:0020,
+--    18:004:0019, 19:020:0034. pp_lead_label successor = John Fenley (confirmed); county mailing address is the sold house.
+--    West retired: 'O:Utah:WEST DANIEL DEC' into pp_resolved_override (239 -> 240); Payson 08:092:0004 went to
+--    Cody & Andrea Wilkinson (2027 owner row). West label set active=false.
+--    Backups: pp_backup_override_20261121 (239 rows), pp_backup_lead_label_20261121.
+--    Undo: delete from pp_resolved_override where entity_key='O:Utah:WEST DANIEL DEC'; restore labels from backup; recompute.
+-- 3. pp_snap_conviction_20261121_contact: baselines pp_snap_conviction_20261121, pp_snap_parcel_intel_20261121 (13:24 UTC).
+-- 4. pp_device_880a0415_cleanup_20261121: device 880a0415 pp_agents row backed up (1 row), deleted by ID; live count 0.
+-- 5. pp_divorce_wording_property_20261121: pp_lead_situation summary 'ties them to a home' -> 'ties them to a property'.
+--    Old def in pp_function_backup. Undo: re-execute the saved def.
+-- 6. Contact backfill (free county sources only), runs 44908756528 (Utah NameSearch, utah-name-backfill.yml, commit 0eaafc5)
+--    and 44908758609 (Summit EagleWeb / Wasatch ArcGIS / Salt Lake assessor, name-verified). Both: recompute 200,
+--    invariants PASSED, spot-check 0 mismatches.
+--    Unreachable live leads below 85: 6,133 -> 4,902; 1,357 became reachable (Utah 1,152, Wasatch 148, Salt Lake 34, Summit 23).
+--    REGRESSION FOUND: pp_parcel_intel holds one owner_key per parcel, so 199 parcels were re-keyed from one lead to another
+--    (183 same surname = co-owners / name variants, 10 cross-county); 136 leads lost their only mailing address (2 were top tier,
+--    now held at 84). Old links are in pp_snap_parcel_intel_20261121. Fix pending approval (owner link table).
