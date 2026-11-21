@@ -1,0 +1,38 @@
+name: Utah owner-name address catch-up
+# On demand: Utah County assessor owner-name search (exact normalised name match only) for Utah leads with no mailing
+# address, beyond the nightly top-400 window. Writes owner parcels (value, property and mailing address) to
+# pp_parcel_intel, then recomputes and runs the integrity gate.
+on:
+  workflow_dispatch:
+    inputs:
+      name_pool:  { description: 'Utah leads without a mailing address to consider', default: '3500' }
+      name_limit: { description: 'names to search this run', default: '3500' }
+concurrency: { group: pp-utah-name-backfill, cancel-in-progress: false }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      NAME_ONLY: '1'
+      NAME_POOL: ${{ github.event.inputs.name_pool || '3500' }}
+      NAME_LIMIT: ${{ github.event.inputs.name_limit || '3500' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Utah County owner-name search → owner parcels
+        run: timeout 270m python scrapers/parcel_intel.py || echo "::warning::name search ended early"
+      - name: Recompute convergence + caches
+        if: always()
+        run: |
+          H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
+          for fn in pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_map_and_perf_bt pp_refresh_kpi_cache; do
+            code=$(curl -s -o /tmp/r.txt -w "%{http_code}" -X POST "${H[@]}" "$SUPABASE_URL/rest/v1/rpc/$fn" -d '{}' --max-time 180)
+            echo "$fn -> $code $(head -c 40 /tmp/r.txt)"
+            [ "$code" -lt 400 ] || { echo "::error::$fn failed"; exit 1; }
+          done
+      - name: Integrity gate
+        run: python scrapers/integrity_spotcheck.py

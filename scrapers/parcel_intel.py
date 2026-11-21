@@ -71,10 +71,23 @@ def resolve_parcels_by_name(limit):
     """For high-conviction Utah owners with NO parcel on any signal, find their parcels
     via the assessor owner-name search. EXACT-match only on the normalised name — an
     under-match is safe, a mis-match puts an agent at a stranger's house."""
-    q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key,owner_display&resolved_flag=is.false"
-       f"&county=eq.Utah&order=conviction_score.desc&limit=400")
-    owners=requests.get(q,headers=H,timeout=30).json()
-    have=set(x['owner_key'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&owner_key=not.is.null",headers=H,timeout=30).json())
+    # Nov 21 2026: NAME_POOL widens the pool beyond the top 400 to every Utah lead with no mailing address (the leads
+    # below the top 400 were never searched). Nightly keeps the old window; the catch-up workflow passes a large pool.
+    # PostgREST caps a request at 1000 rows, so both lists are paged (the 'have' list was silently cut at 1000).
+    pool=int(os.environ.get('NAME_POOL','400')); only_unmailed=pool>400
+    owners=[]
+    while len(owners)<pool:
+        q=(f"{SB}/rest/v1/pp_entity_conviction?select=entity_key,owner_display&resolved_flag=is.false"
+           f"&county=eq.Utah{'&mailing_address=is.null' if only_unmailed else ''}&order=conviction_score.desc,entity_key"
+           f"&limit={min(1000,pool-len(owners))}&offset={len(owners)}")
+        pg=requests.get(q,headers=H,timeout=60).json()
+        owners+=pg
+        if len(pg)<1000: break
+    have=set(); off=0
+    while True:
+        pg=requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&owner_key=not.is.null&order=parcel_serial&limit=1000&offset={off}",headers=H,timeout=60).json()
+        have|={x['owner_key'] for x in pg}; off+=1000
+        if len(pg)<1000: break
     # owners whose signals already carry a parcel are handled by the parcel loop
     with_parcel=set()
     for i in range(0,len(owners),80):
@@ -271,4 +284,8 @@ def main(limit=60):
         else: log.error(f'  {s} write {w.status_code} {w.text[:100]}')
     log.info(f'enriched {n} parcels'); return n
 
-if __name__=='__main__': main(int(os.environ.get('PARCEL_LIMIT','60')))
+if __name__=='__main__':
+    if os.environ.get('NAME_ONLY')=='1':   # Nov 21 2026: catch-up run of the owner-name search alone
+        resolve_parcels_by_name(int(os.environ.get('NAME_LIMIT','40')))
+    else:
+        main(int(os.environ.get('PARCEL_LIMIT','60')))
