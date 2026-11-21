@@ -335,7 +335,8 @@ def utah_page(sess, ser):
     t = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', r.text, flags=re.S | re.I)
     t = re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', ' ', t)))
     if 'Serial Number' not in t: return {'error': 'county has no property page for this serial (retired, split or renumbered)'}
-    seg = re.search(r'Photos Documents (.*?) ----- Real Estate Values', t)
+    # a parcel with no property address has no Location/Photos/Documents tabs, so anchor on the owner table header
+    seg = re.search(r'Tax History (?:Location )?(?:Photos )?(?:Documents )?(.*?) ----- Real Estate Values', t)
     owners = []
     if seg:
         for spec, name in re.findall(r'(\d{4}(?:\.\.\.|NV|-\d{4})?)\s+(.+?)(?=\s\d{4}(?:\.\.\.|NV|-\d{4})?\s|$)', seg.group(1)):
