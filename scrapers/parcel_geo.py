@@ -41,15 +41,25 @@ def layer_query(lay, county, batch):
     return r
 def main(limit=1500):
     # every parcel attached to a live signal or to parcel_intel, not yet geocoded
-    have=set(x['parcel_serial'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_geo?select=parcel_serial",headers=H,timeout=60).json())
+    # Nov 21 2026: the REST API returns at most 1,000 rows per request, so the old single reads saw only the first 1,000
+    # geocoded parcels and the first 1,000 queue rows — runs re-wrote parcels already on file and never reached the rest.
+    def fetch_all(path, order):
+        out=[]; off=0
+        while True:
+            rows=requests.get(f"{SB}/rest/v1/{path}&order={order}&limit=1000&offset={off}",headers=H,timeout=120).json()
+            if not isinstance(rows,list): raise RuntimeError(f'read {path}: {str(rows)[:200]}')
+            out+=rows
+            if len(rows)<1000: return out
+            off+=1000
+    have=set(x['parcel_serial'] for x in fetch_all("pp_parcel_geo?select=parcel_serial", "parcel_serial"))
     want={}
     # queue parcels first (what the app shows), then buyer parcels, then the rest — per county
     for county in LAYERS:
         ce=requests.utils.quote(county)
-        for path in [f"pp_conviction_queue?select=property_ref,county&county=eq.{ce}&property_ref=not.is.null&limit=3000",
-                     f"pp_parcel_intel?select=parcel_serial,county&county=eq.{ce}&limit=3000",
-                     f"pp_scraper_signals?select=parcel_serial,county&county=eq.{ce}&is_legacy=eq.false&parcel_serial=not.is.null&signal_type=neq.tax_delinquency&limit=5000"]:
-            for r in requests.get(f"{SB}/rest/v1/{path}",headers=H,timeout=120).json():
+        for path,order in [(f"pp_conviction_queue?select=property_ref,county&county=eq.{ce}&property_ref=not.is.null","property_ref"),
+                     (f"pp_parcel_intel?select=parcel_serial,county&county=eq.{ce}","parcel_serial"),
+                     (f"pp_scraper_signals?select=parcel_serial,county&county=eq.{ce}&is_legacy=eq.false&parcel_serial=not.is.null&signal_type=neq.tax_delinquency","id")]:
+            for r in fetch_all(path, order):
                 s=r.get('parcel_serial') or r.get('property_ref')
                 if s and s not in have and re.match(r'^[A-Z0-9:\-]{5,20}$',s): want.setdefault(county,set()).add(s)
     todo=sum(len(v) for v in want.values()); log.info(f'{todo} parcels to geocode across {len(want)} counties')
