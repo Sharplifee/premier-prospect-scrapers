@@ -1,0 +1,27 @@
+name: Backfill (map points + obituaries)
+# Nov 21 2026: re-runs the two steps that failed today — state parcel layer 504s (map points) and the Deseret obituary
+# page that moved (404) — with the new retry/backoff code, then recomputes under the shared lease and runs the gate.
+on: workflow_dispatch
+concurrency: { group: pp-backfill-geo-obits, cancel-in-progress: false }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      GEO_LIMIT: '2500'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests beautifulsoup4 pdfplumber
+      - name: Map points (state parcel layers)
+        run: timeout 25m python scrapers/parcel_geo.py
+      - name: Obituaries (Herald Extra + Deseret)
+        run: cd scrapers && python -c "import run_all; print('obituary signals inserted:', run_all.scrape_obituaries_enrichment())"
+      - name: Recompute (lease) + gate
+        run: |
+          bash scrapers/pp_recompute.sh
+          python scrapers/integrity_spotcheck.py

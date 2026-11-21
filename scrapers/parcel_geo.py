@@ -18,6 +18,27 @@ UG="https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/{layer}/F
 LAYERS={'Utah':'Parcels_Utah','Salt Lake':'Parcels_SaltLake','Summit':'Parcels_Summit','Wasatch':'Parcels_Wasatch'}
 def layer_id(county, serial):
     return serial.replace(':','') if county=='Utah' else serial
+def layer_query(lay, county, batch):
+    """Nov 21 2026: the state layer answered 504 five times today and each failed batch of 60 parcels was skipped.
+    Retry with backoff (5s, 15s, 45s); if a batch still fails, split it in half once and try the halves."""
+    def one(b):
+        ids=",".join("'"+layer_id(county,s).replace("'","''")+"'" for s in b)
+        for wait in (0, 5, 15, 45):
+            if wait: time.sleep(wait)
+            try:
+                resp=requests.get(UG.format(layer=lay),params={'where':f"PARCEL_ID IN ({ids})",'outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,PARCEL_ZIP','returnGeometry':'false','outSR':'4326','returnCentroid':'true','f':'json'},timeout=90)
+                if resp.status_code==200:
+                    j=resp.json()
+                    if 'error' not in j: return j
+                log.warning(f'{county} state layer HTTP {resp.status_code} — retrying')
+            except Exception as e: log.warning(f'{county} state layer {type(e).__name__} — retrying')
+        return None
+    r=one(batch)
+    if r is None and len(batch)>1:
+        h=len(batch)//2; a=one(batch[:h]); b=one(batch[h:])
+        if a is None and b is None: return None
+        r={'features':(a or {}).get('features',[])+(b or {}).get('features',[])}
+    return r
 def main(limit=1500):
     # every parcel attached to a live signal or to parcel_intel, not yet geocoded
     have=set(x['parcel_serial'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_geo?select=parcel_serial",headers=H,timeout=60).json())
@@ -32,14 +53,13 @@ def main(limit=1500):
                 s=r.get('parcel_serial') or r.get('property_ref')
                 if s and s not in have and re.match(r'^[A-Z0-9:\-]{5,20}$',s): want.setdefault(county,set()).add(s)
     todo=sum(len(v) for v in want.values()); log.info(f'{todo} parcels to geocode across {len(want)} counties')
-    n=0
+    n=0; missed=0
     for county,serials in want.items():
         serials=sorted(serials)[:limit]; lay=LAYERS[county]
         for i in range(0,len(serials),60):
             batch=serials[i:i+60]; ids=",".join("'"+layer_id(county,s).replace("'","''")+"'" for s in batch)
-            try:
-                r=requests.get(UG.format(layer=lay),params={'where':f"PARCEL_ID IN ({ids})",'outFields':'PARCEL_ID,PARCEL_ADD,PARCEL_CITY,PARCEL_ZIP','returnGeometry':'false','outSR':'4326','returnCentroid':'true','f':'json'},timeout=90).json()
-            except Exception as e: log.warning(f'{county} batch {i}: {type(e).__name__}'); continue
+            r=layer_query(lay, county, batch)
+            if r is None: missed+=len(batch); log.warning(f'{county} batch {i}: state layer failed after retries ({len(batch)} parcels left for the next run)'); continue
             back={}
             for f in r.get('features',[]):
                 a=f['attributes']; c=f.get('centroid') or {}
@@ -59,5 +79,5 @@ def main(limit=1500):
         log.info(f'  {county}: done')
     # geometry column + city by point-in-polygon where the layer had none
     requests.post(f"{SB}/rest/v1/rpc/pp_finish_parcel_geo",json={},headers=H,timeout=180)
-    log.info(f'geocoded {n} parcels'); return n
+    log.info(f'geocoded {n} parcels; {missed} left for the next run after retries'); return n
 if __name__=='__main__': main(int(os.environ.get('GEO_LIMIT','1500')))

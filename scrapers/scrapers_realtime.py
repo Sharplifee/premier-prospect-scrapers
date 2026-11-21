@@ -58,6 +58,20 @@ def dedupe_hash(source_slug, owner, address):
     key = f"{source_slug}|{owner or ''}|{address or ''}"
     return hashlib.md5(key.encode()).hexdigest()
 
+def _source_count(source_slug):
+    """Row count for one source (before/after an insert). Nov 21 2026: a single 15s try timed out twice while a recompute
+    held the table busy, which logged the run as 0 inserted. Retry with backoff and a longer timeout."""
+    for attempt, wait in enumerate((0, 5, 20)):
+        if wait: time.sleep(wait)
+        try:
+            r = SESSION.get(f"{SUPABASE_URL}/rest/v1/pp_scraper_signals?select=id&source_slug=eq.{source_slug}&limit=1",
+                            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=45)
+            if r.status_code < 400:
+                return int(r.headers.get('content-range', '0/0').split('/')[-1])
+        except Exception as e:
+            log.warning(f'count {source_slug} attempt {attempt + 1}: {type(e).__name__}')
+    return None
+
 def post_batch(records):
     if not records: return 0
     seen, unique = set(), []
@@ -72,15 +86,7 @@ def post_batch(records):
             seen.add(h)
             unique.append({k:v for k,v in rec.items() if k in allowed})
     source_slug = unique[0].get('source_slug', '') if unique else ''
-    try:
-        before_r = SESSION.get(
-            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-            f"?select=id&source_slug=eq.{source_slug}&limit=1",
-            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
-        )
-        before_count = int(before_r.headers.get('content-range', '0/0').split('/')[-1])
-    except Exception:
-        before_count = None
+    before_count = _source_count(source_slug)
 
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
@@ -95,16 +101,8 @@ def post_batch(records):
                 if attempt < 2: time.sleep(5)
 
     if before_count is not None:
-        try:
-            after_r = SESSION.get(
-                f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-                f"?select=id&source_slug=eq.{source_slug}&limit=1",
-                headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
-            )
-            after_count = int(after_r.headers.get('content-range', '0/0').split('/')[-1])
-            inserted = max(0, after_count - before_count)
-        except Exception:
-            inserted = 0
+        after_count = _source_count(source_slug)
+        inserted = max(0, after_count - before_count) if after_count is not None else 0
     else:
         inserted = 0
     return inserted

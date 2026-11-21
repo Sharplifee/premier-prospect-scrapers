@@ -66,3 +66,16 @@
 --    pp_integrity_name_only_top_20261121: pp_integrity_check gains name_only_top and top_without_contact (both must be 0).
 --    Old defs in pp_function_backup. Recompute + gate run 44957540015: invariants PASSED, 0 mismatches.
 --    Found, not changed (RLS rule): view pp_buyer_queue is not security_invoker and returns buyer rows to the public anon key.
+-- K. ~5 PM MT.
+--    pp_anon_read_only_20261121 (backup of every prior ACL in pp_backup_anon_grants_20261121, RLS on, service only):
+--      the public (anon) key lost INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on all 103 pp_ tables and views;
+--      lost SELECT on pp_buyer_events, pp_buyer_profiles, pp_buyer_seller_matches, pp_buyer_queue, pp_leads_cache (names,
+--      emails, phones, addresses, notes); lost EXECUTE on definer functions pp_refresh_app_cache, pp_compute_buyer_backtest,
+--      pp_compute_cross_county, pp_finish_parcel_geo, pp_trigger_matching_engine, pp_sms_opt_out, pp_top_leads,
+--      pp_top_buyer_profiles, pp_top_matches (re-granted to authenticated + service_role, so device sessions are unchanged).
+--      RLS policies unchanged; no login or gate added; log_events kept. Undo: re-apply the ACLs saved in the backup table.
+--    Richardson Dennis G confirmed (method family_entity_transfer): DBD DCD INVESTMENTS LLC, Utah entity 14743909-0160,
+--      managed by Mark D. Richardson, owned by CMND 2347 Irrevocable Trust, both at 613 Mountaineer Cir, Tooele (Connor).
+--    Event-log fixes: parcel_geo.py retries AGRC 5xx (0/5/15/45s) then halves the batch; Deseret obituaries moved to
+--      /obituaries/ with a link fallback and exponential backoff; post_batch counts retry 3x with a 45s timeout.
+--      .github/workflows/backfill-geo-obits.yml re-runs both and recomputes.

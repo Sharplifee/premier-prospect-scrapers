@@ -140,13 +140,13 @@ def safe_get(url, timeout=20, retries=3, delay=5, **kwargs):
                 continue
             if r.status_code in (200, 404): return r
             log.warning(f"HTTP {r.status_code} {url[:60]} attempt {attempt+1}")
-            time.sleep(delay)
+            time.sleep(delay * 2 ** attempt)   # Nov 21 2026: back off 5s, 10s, 20s
         except requests.exceptions.Timeout:
             log.warning(f"Timeout {url[:60]} attempt {attempt+1}")
-            time.sleep(delay)
+            time.sleep(delay * 2 ** attempt)
         except Exception as e:
             log.warning(f"Request error {url[:60]}: {e}")
-            time.sleep(delay)
+            time.sleep(delay * 2 ** attempt)
     return None
 
 def safe_post(url, data=None, timeout=20, retries=3, **kwargs):
@@ -196,6 +196,20 @@ def score_tier(score):
     if score >= 40: return 'WARM'
     return 'COOL'
 
+def _source_count(source_slug):
+    """Row count for one source (before/after an insert). Nov 21 2026: a single 15s try timed out twice while a recompute
+    held the table busy, which logged the run as 0 inserted. Retry with backoff and a longer timeout."""
+    for attempt, wait in enumerate((0, 5, 20)):
+        if wait: time.sleep(wait)
+        try:
+            r = SESSION.get(f"{SUPABASE_URL}/rest/v1/pp_scraper_signals?select=id&source_slug=eq.{source_slug}&limit=1",
+                            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=45)
+            if r.status_code < 400:
+                return int(r.headers.get('content-range', '0/0').split('/')[-1])
+        except Exception as e:
+            log.warning(f'count {source_slug} attempt {attempt + 1}: {type(e).__name__}')
+    return None
+
 def post_batch(records):
     if not records: return 0
     seen, unique = set(), []
@@ -220,15 +234,7 @@ def post_batch(records):
     # as "inserted" even when zero new rows landed. This approach depends on
     # nothing except a plain row count before and after, which cannot lie.
     source_slug = unique[0].get('source_slug', '') if unique else ''
-    try:
-        before_r = SESSION.get(
-            f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-            f"?select=id&source_slug=eq.{source_slug}&limit=1",
-            headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
-        )
-        before_count = int(before_r.headers.get('content-range', '0/0').split('/')[-1])
-    except Exception:
-        before_count = None
+    before_count = _source_count(source_slug)
 
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
@@ -244,16 +250,8 @@ def post_batch(records):
                 if attempt < 2: time.sleep(5)
 
     if before_count is not None:
-        try:
-            after_r = SESSION.get(
-                f"{SUPABASE_URL}/rest/v1/pp_scraper_signals"
-                f"?select=id&source_slug=eq.{source_slug}&limit=1",
-                headers={**HEADERS, 'Prefer': 'count=exact'}, timeout=15
-            )
-            after_count = int(after_r.headers.get('content-range', '0/0').split('/')[-1])
-            inserted = max(0, after_count - before_count)
-        except Exception:
-            inserted = 0
+        after_count = _source_count(source_slug)
+        inserted = max(0, after_count - before_count) if after_count is not None else 0
     else:
         inserted = 0
 
@@ -1298,15 +1296,27 @@ def scrape_obituaries_enrichment():
     SOURCES = [
         # Herald Extra — Utah County, confirmed stable article selector
         ('https://www.heraldextra.com/obituaries/', 'Utah'),
-        # Deseret News — SL County, also uses article tags
-        ('https://www.deseret.com/utah/obituaries/', 'Salt Lake'),
+        # Deseret News — SL County. Nov 21 2026: /utah/obituaries/ now returns 404 (3 failed fetches today); the section
+        # moved to /obituaries/ and lists stories as links, not <article> cards — parsed by the link fallback below.
+        ('https://www.deseret.com/obituaries/', 'Salt Lake'),
     ]
     seen = set()
     for url, county in SOURCES:
         r = safe_get(url, timeout=15)
         if not r or r.status_code != 200: continue
         soup = BeautifulSoup(r.text, 'html.parser')
-        for card in soup.select('article'):
+        cards = soup.select('article')
+        if not cards:
+            # link-list layout (Deseret): one obituary per /obituaries/YYYY/MM/DD/slug/ link; the link text is the headline
+            for a in soup.select('a[href*="/obituaries/20"]'):
+                name = a.get_text(' ', strip=True)
+                m = re.search(r'/obituaries/(\d{4})/(\d{2})/(\d{2})/', a['href'])
+                if not name or len(name) < 3 or name in seen or not m: continue
+                seen.add(name)
+                signals.append({'source_slug': slug, 'signal_type': 'obituary', 'score': 62, 'county': county, 'city': None,
+                                'raw_owner_name': name, 'raw_address': f'Obituary: {name}',
+                                'raw_payload': json.dumps({'name': name, 'pub_date': '-'.join(m.groups()), 'url': a['href'], 'source': url})})
+        for card in cards:
             name_el = card.select_one('h1, h2, h3, [class*=headline], [class*=title]')
             name = name_el.get_text(strip=True) if name_el else ''
             if not name or len(name) < 3 or name in seen: continue
