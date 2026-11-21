@@ -34,3 +34,8 @@ delete from pp_top_tier_hold where entity_key in (select entity_key from pp_back
 --    pp_lead_situation: divorce_transfer (a deed dropping one name from title) no longer makes a lead 'divorce';
 --    14 leads with no divorce court case moved to their next record type.
 --    Undo: re-execute both saved defs from pp_function_backup, then select pp_refresh_app_cache();
+
+-- 6. pp_e2e_test_cleanup_20261120 (8:5x PM MT)
+--    End-to-end logging test by throwaway device b494b320 on the Beckstead lead (outcomes 50, 51; lifecycle row; deal 8; agent row).
+--    All 5 rows backed up to pp_backup_e2e_test_20261120 (tbl, row_data jsonb), then deleted by explicit ID. Beckstead back to 'new', 0 touches.
+--    Auth user b494b320 and the append-only event_log entries 334525-334529 left in place on purpose.
