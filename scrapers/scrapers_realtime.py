@@ -234,7 +234,7 @@ def scrape_slco_recorder():
     and produces the same signal types.
     """
     slug = 'slco-recorder-live'
-    log.info(f'[{slug}] starting — SL county via LandRecords API')
+    log.info(f'[{slug}] starting — Utah County LandRecords API (not Salt Lake)')
 
     DOC_TYPES = [
         ('NOTICE OF DEFAULT',      'nod',          88),
@@ -269,6 +269,7 @@ def scrape_slco_recorder():
     # Sep 20 2026 audit: this endpoint is the UTAH COUNTY recorder only; 'Salt Lake' rows it produced were Utah County
     # documents mislabelled, and the DOC_TYPES text path stamped 'NOTICE OF DEFAULT' on deeds of trust and quit-claims.
     # KOI-only, Utah County only. ND / CAN ND / SUB TEE are carried by the unified sweep in run_all.py.
+    # Nov 21 2026: Utah County feed only — rows are Utah County documents and must be keyed O:Utah: (never Salt Lake).
     for county_name in ['Utah']:
         try:
             r = SESSION.post(

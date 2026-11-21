@@ -2294,7 +2294,9 @@ def scrape_comparable_sales_slco():
     SKIP_GRANTORS = {'MERS','MORTGAGE ELECTRONIC','FEDERAL','FNMA','FHLMC',
                      'FANNIE','FREDDIE','HUD','USA ','U.S.'}
     signals = []
-    for county_name in ['Salt Lake','Utah','Davis','Weber']:
+    # Nov 21 2026: DocDescSearch is Utah County's recorder and ignores the County field, so every row is a Utah County
+    # document. Looping 'Salt Lake','Davis','Weber' stored the same deeds under Salt Lake keys (300 duplicate leads).
+    for county_name in ['Utah']:
         try:
             r = SESSION.post(
                 'https://www.utahcounty.gov/LandRecords/DocDescSearch.asp',
