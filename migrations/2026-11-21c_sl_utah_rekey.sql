@@ -50,3 +50,13 @@
 --    deed, TaxEntry, via OnBase keyword 328 'Entry #', names the lead as grantee), Summit 11 (Eagle Web documents searched by
 --    parcel serial). Not confirmed: Richardson Dennis G (QCD 91315-2026 conveyed 39:109:0014 to DBD DCD INVESTMENTS LLC, now
 --    the owner — possible sale, left for review), Neider and Paul (only an outbound deed found). Salt Lake: no free recorder.
+-- I. Deed-out review (~3:30 PM MT). No retirements: no deed to an unrelated owner was found.
+--    Richardson Dennis G: QCD 91315-2026 ($10, prepared by Sandberg, Stettler & Bloxham, recorded the same minute as his wife
+--      Jannine's death affidavit 91314-2026) from the Richardson Family Trust to DBD DCD INVESTMENTS LLC; tax notices go to
+--      613 Mountaineer Cir, Tooele. Utah business entity search (businessregistration.utah.gov) answers automated requests with a
+--      Cloudflare bot challenge, so the LLC's officers were not read. Kept, unconfirmed (84).
+--    Neider: PK-2-AM WD 01259460 (10/29/2026) to co-trustees Donna Van Wagoner and Heidi Neider Killpack — family trust, kept.
+--    Paul Carolyn: WD 01258973 to Hoffman Cherilyn Trustee covers Summit Watch condo units, not her TWNPT-B-205 — kept.
+--    Oleson John Raymond: parcel 00-0021-0112 vested 580832 (Michael Oleson -> Michael Jay Oleson TR) — family, kept.
+--    pp_unlink_smith_steven_b_20261121: 00-0021-5902 is SMITH STEVEN KLAY / KRISTEN C (WD 517753), not Steven B Smith; owner_key
+--      cleared, row backed up in pp_backup_sl_rekey_side_20261121 (tbl 'pp_parcel_intel:unlink_smith').
