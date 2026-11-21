@@ -30,3 +30,9 @@
 --    Staging pp_trd_relabel_20261121, backup pp_backup_trd_relabel_20261121. Code: scrapers_realtime.py KOI map and
 --    integrity_spotcheck.py ALLOWED ('TR D' -> deed_of_trust; 'TEE D' -> trustee_deed).
 --    Undo: update pp_scraper_signals s set signal_type=b.signal_type, score=b.score from pp_backup_trd_relabel_20261121 b where s.id=b.id;
+
+-- E. pp_recompute_lease_20261121: table pp_recompute_lease (one row, RLS on, service only) + pp_recompute_lease_acquire /
+--    _release / _status. scrapers/pp_recompute.sh (used by county-reread, county-backfill, utah-name-backfill,
+--    parcel-backfill, enrich) waits for the lease, retries each step on 55P03/57014/5xx 6x 30s apart, and releases on exit.
+--    run_all.py's recompute takes the same lease and retries. Cause: the REST role's lock_timeout is 8s, so two overlapping
+--    recomputes failed (runs 44932602368, 44933819320). Undo: drop the three functions and the table; restore the inline loops.

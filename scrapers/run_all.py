@@ -2405,6 +2405,29 @@ if __name__ == '__main__':
     # chained all steps inside one function. Now: each step separate, each with
     # its own timeout. KPI counts only read from small indexed tables.
     log.info('Refreshing pipeline intelligence...')
+    # Nov 21 2026: one recompute at a time across all callers (see scrapers/pp_recompute.sh). Wait for the lease; if it
+    # is not free within 40 min, carry on as before (each step below still logs its own result).
+    _holder = f"scraper-run#{os.environ.get('GITHUB_RUN_ID', os.getpid())}"
+    def _lease(fn, **body):
+        try:
+            return requests.post(f"{SUPABASE_URL}/rest/v1/rpc/{fn}", headers=RPC_HEADERS, json=body, timeout=30).text.strip() == 'true'
+        except Exception:
+            return False
+    _t0 = time.time()
+    while not _lease('pp_recompute_lease_acquire', p_holder=_holder, p_ttl_seconds=900):
+        if time.time() - _t0 > 2400: log.warning('  recompute lease still held after 40 min — recomputing anyway'); break
+        time.sleep(20)
+    log.info(f'  recompute lease acquired after {int(time.time() - _t0)}s')
+    _orig_post = requests.post
+    def _post_retry(url, *a, **kw):
+        # lock (55P03) or statement timeout (57014) from an overlapping recompute: wait and retry instead of failing
+        for attempt in range(6):
+            r = _orig_post(url, *a, **kw)
+            if r.status_code < 400 or attempt == 5 or not ('55P03' in r.text or '57014' in r.text or r.status_code >= 500):
+                return r
+            log.warning(f'  {url.rsplit("/", 1)[-1]}: {r.status_code} lock/timeout, retry {attempt + 1} in 30s'); time.sleep(30)
+        return r
+    requests.post = _post_retry
 
     # BUYER LAYER RETIRED (Aug 31 2026). The buyer profiles were website names
     # and page boilerplate ("Redfin SLC", "KW Utah", SLCO nav text, news
@@ -2495,6 +2518,8 @@ if __name__ == '__main__':
     if not kpi_ok:
         log.error('  KPI cache refresh FAILED after 3 attempts — dashboards may show stale data')
 
+    requests.post = _orig_post
+    _lease('pp_recompute_lease_release', p_holder=_holder)
     log.info('Pipeline intelligence refresh complete.')
 
     log.info(f'=== Done — {total} total signals ===')
