@@ -76,6 +76,10 @@
 --      RLS policies unchanged; no login or gate added; log_events kept. Undo: re-apply the ACLs saved in the backup table.
 --    Richardson Dennis G confirmed (method family_entity_transfer): DBD DCD INVESTMENTS LLC, Utah entity 14743909-0160,
 --      managed by Mark D. Richardson, owned by CMND 2347 Irrevocable Trust, both at 613 Mountaineer Cir, Tooele (Connor).
---    Event-log fixes: parcel_geo.py retries AGRC 5xx (0/5/15/45s) then halves the batch; Deseret obituaries moved to
---      /obituaries/ with a link fallback and exponential backoff; post_batch counts retry 3x with a 45s timeout.
---      .github/workflows/backfill-geo-obits.yml re-runs both and recomputes.
+--    Event-log fixes: parcel_geo.py retries the state layer (0/5/15/45s) then halves the batch, sends 10 parcels per call
+--      (the layer now rejects 60 after ~55s), and pages every read (REST caps at 1,000 rows, so earlier runs re-wrote
+--      parcels already on file). Backfill run 44963074299: +2,721 map points (7,424 -> 10,145); Utah queue parcels with a
+--      parcel serial and no map point: 65 left (not in the state layer). post_batch counts retry 3x with a 45s timeout.
+--    Deseret News obituaries removed: the old page 404s and the new /obituaries/ section is news headlines, not death
+--      notices. Run 44962038559 inserted 4 headline rows (ids 4668987-4668990) as leads — PENDING removal by explicit ID
+--      (migration pp_remove_deseret_headlines_20261121, backup table pp_backup_deseret_headlines_20261121): approval cancelled.

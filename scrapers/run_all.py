@@ -1296,9 +1296,9 @@ def scrape_obituaries_enrichment():
     SOURCES = [
         # Herald Extra — Utah County, confirmed stable article selector
         ('https://www.heraldextra.com/obituaries/', 'Utah'),
-        # Deseret News — SL County. Nov 21 2026: /utah/obituaries/ now returns 404 (3 failed fetches today); the section
-        # moved to /obituaries/ and lists stories as links, not <article> cards — parsed by the link fallback below.
-        ('https://www.deseret.com/obituaries/', 'Salt Lake'),
+        # Deseret News removed Nov 21 2026: /utah/obituaries/ returns 404 (3 failed fetches today) and the new /obituaries/
+        # section lists news stories about deaths (headlines, some years old), not death notices — a test pull turned 4
+        # headlines into fake leads (removed by ID). Re-add only with a source that carries the decedent's name and date.
     ]
     seen = set()
     for url, county in SOURCES:
@@ -1306,16 +1306,6 @@ def scrape_obituaries_enrichment():
         if not r or r.status_code != 200: continue
         soup = BeautifulSoup(r.text, 'html.parser')
         cards = soup.select('article')
-        if not cards:
-            # link-list layout (Deseret): one obituary per /obituaries/YYYY/MM/DD/slug/ link; the link text is the headline
-            for a in soup.select('a[href*="/obituaries/20"]'):
-                name = a.get_text(' ', strip=True)
-                m = re.search(r'/obituaries/(\d{4})/(\d{2})/(\d{2})/', a['href'])
-                if not name or len(name) < 3 or name in seen or not m: continue
-                seen.add(name)
-                signals.append({'source_slug': slug, 'signal_type': 'obituary', 'score': 62, 'county': county, 'city': None,
-                                'raw_owner_name': name, 'raw_address': f'Obituary: {name}',
-                                'raw_payload': json.dumps({'name': name, 'pub_date': '-'.join(m.groups()), 'url': a['href'], 'source': url})})
         for card in cards:
             name_el = card.select_one('h1, h2, h3, [class*=headline], [class*=title]')
             name = name_el.get_text(strip=True) if name_el else ''
