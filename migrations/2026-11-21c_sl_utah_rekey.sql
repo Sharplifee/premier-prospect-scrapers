@@ -36,3 +36,12 @@
 --    parcel-backfill, enrich) waits for the lease, retries each step on 55P03/57014/5xx 6x 30s apart, and releases on exit.
 --    run_all.py's recompute takes the same lease and retries. Cause: the REST role's lock_timeout is 8s, so two overlapping
 --    recomputes failed (runs 44932602368, 44933819320). Undo: drop the three functions and the table; restore the inline loops.
+
+-- F. pp_qa_device_20261121 / pp_qa_device_save_20261121: one permanent QA device (agent 6c1d92aa-49c2-486e-8d14-b107f99debc3,
+--    'QA device (automated checks)'); its rotating refresh token lives in pp_qa_device (service only). scrapers/qa_check.py +
+--    .github/workflows/qa-check.yml reuse it for site + app checks; never sign up a throwaway device again.
+--    Throwaway devices removed today (backed up in pp_backup_e2e_test_20261120): d8d40acb, 880a0415, 53a01e2b, d4ebf435.
+-- G. pp_parcel_match_a_20261121 / _a2_confirmations / _b: pp_parcel_match_confirm (58 rows: a second person from the lead's
+--    own filing is on the county owner record) + pp_entity_conviction.parcel_match ('document' | 'name_only' | null).
+--    pp_compute_convergence caps name_only leads at 84 (cannot reach the top tier); pp_conviction_queue exposes parcel_match.
+--    Old defs in pp_function_backup. Undo: re-execute the saved defs, then recompute.
