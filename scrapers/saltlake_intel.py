@@ -58,6 +58,18 @@ def resolve(name):
     pid=next(iter(hits))
     d=S.get("https://apps.saltlakecounty.gov/assessor/new/valuationInfoExpanded.cfm",params={'Parcel_id':pid},timeout=40)
     det=parse_detail(d.text); return det if det and query_name(det['owner'])==q else None
+def sl_mailing(pid):
+    """Nov 21 2026: the assessor page carries no mailing address, so leads resolved here had a parcel but no way to reach
+    them (Jennifer Martin, top tier, held at 84). Read the owner mailing address from the county GIS parcel layer."""
+    try:
+        r=requests.get("https://apps.saltlakecounty.gov/slcogis/rest/services/Land/MapServer/1/query",
+                       params={'where':f"parcel_id='{pid}'",'outFields':'own_addr,own_apt_num,own_citystate,own_zip','returnGeometry':'false','f':'json'},timeout=40).json()
+        a=(r.get('features') or [{}])[0].get('attributes') or {}
+        g=lambda k: str(a.get(k) or '').strip()
+        line1=' '.join(x for x in [g('own_addr'),g('own_apt_num')] if x); line2=' '.join(x for x in [g('own_citystate'),g('own_zip')] if x)
+        return ', '.join(x for x in [line1,line2] if x) or None
+    except Exception as e:
+        log.warning(f'  mailing for {pid}: {type(e).__name__}'); return None
 def main(limit=60):
     have=set(x['owner_key'] for x in requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&county=eq.Salt%20Lake&limit=10000",headers=H,timeout=60).json())
     todo=[x for x in requests.get(f"{SB}/rest/v1/pp_conviction_queue?select=entity_key,owner_display&county=eq.Salt%20Lake&order=conviction_score.desc&limit=3000",headers=H,timeout=60).json() if x['entity_key'] not in have][:limit]
@@ -66,7 +78,7 @@ def main(limit=60):
         try: d=resolve(x['owner_display'])
         except Exception as e: log.warning(f"  {x['owner_display'][:30]}: {type(e).__name__}"); continue
         if not d: continue
-        requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'owner_key':x['entity_key'],'county':'Salt Lake','market_value':d['value'],'property_address':d['address'],'fetched_at':'now()'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'owner_key':x['entity_key'],'county':'Salt Lake','market_value':d['value'],'property_address':d['address'],'mailing_address':sl_mailing(d['parcel']),'fetched_at':'now()'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         if d['lat'] and d['lon']:
             requests.post(f"{SB}/rest/v1/pp_parcel_geo?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'county':'Salt Lake','address':d['address'],'lon':d['lon'],'lat':d['lat']},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         n+=1; log.info(f"  {x['owner_display'][:28]:28} → {d['parcel']} {str(d['address'])[:26]:26} ${d['value'] or 0:,}")
@@ -81,7 +93,7 @@ def main(limit=60):
         except Exception as e: log.warning(f"  {b['buyer_display'][:30]}: {type(e).__name__}"); continue
         requests.post(f"{SB}/rest/v1/pp_buyer_parcel_attempts?on_conflict=buyer_key",json={'buyer_key':b['buyer_key'],'hits':1 if d else 0,'county':'Salt Lake'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         if not d: continue
-        requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'buyer_key':b['buyer_key'],'county':'Salt Lake','market_value':d['value'],'property_address':d['address'],'fetched_at':'now()'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
+        requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'buyer_key':b['buyer_key'],'county':'Salt Lake','market_value':d['value'],'property_address':d['address'],'mailing_address':sl_mailing(d['parcel']),'fetched_at':'now()'},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         if d['lat'] and d['lon']:
             requests.post(f"{SB}/rest/v1/pp_parcel_geo?on_conflict=parcel_serial",json={'parcel_serial':d['parcel'],'county':'Salt Lake','address':d['address'],'lon':d['lon'],'lat':d['lat']},headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         bn+=1; log.info(f"  buyer {b['buyer_display'][:22]:22} → {d['parcel']} {str(d['address'])[:26]:26} ${d['value'] or 0:,}")
