@@ -6,7 +6,7 @@ concurrency: { group: pp-backfill-geo-obits, cancel-in-progress: false }
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -18,10 +18,12 @@ jobs:
         with: { python-version: '3.12' }
       - run: pip install -q requests beautifulsoup4 pdfplumber
       - name: Map points (state parcel layers)
-        run: timeout 25m python scrapers/parcel_geo.py
+        run: timeout 35m python scrapers/parcel_geo.py
       - name: Obituaries (Herald Extra + Deseret)
+        if: always()
         run: cd scrapers && python -c "import run_all; print('obituary signals inserted:', run_all.scrape_obituaries_enrichment())"
       - name: Recompute (lease) + gate
+        if: always()
         run: |
           bash scrapers/pp_recompute.sh
           python scrapers/integrity_spotcheck.py

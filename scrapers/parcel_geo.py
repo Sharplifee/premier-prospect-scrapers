@@ -3,7 +3,7 @@ Parcel geometry — city, address, zip and a map point for every parcel the syst
 knows, from the state's per-county parcel layers (UGRC). Utah IDs are stored
 without colons there; Summit and Wasatch use the recorder's own format. Summit's
 layer has no city field, so city comes from point-in-polygon against
-pp_municipalities in Postgres afterwards. Batched IN() queries, ~60 per call.
+pp_municipalities in Postgres afterwards. Batched IN() queries, 10 per call.
 """
 import os, re, json, time, logging, requests
 try:
@@ -56,8 +56,10 @@ def main(limit=1500):
     n=0; missed=0
     for county,serials in want.items():
         serials=sorted(serials)[:limit]; lay=LAYERS[county]
-        for i in range(0,len(serials),60):
-            batch=serials[i:i+60]; ids=",".join("'"+layer_id(county,s).replace("'","''")+"'" for s in batch)
+        # Nov 21 2026: the state layer now spends ~50s computing centroids for 30 parcels and rejects 60 ("Invalid query
+        # parameters" after ~55s, or 504); 10 per call returns in under a second.
+        for i in range(0,len(serials),10):
+            batch=serials[i:i+10]
             r=layer_query(lay, county, batch)
             if r is None: missed+=len(batch); log.warning(f'{county} batch {i}: state layer failed after retries ({len(batch)} parcels left for the next run)'); continue
             back={}
