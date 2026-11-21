@@ -45,3 +45,8 @@
 --    own filing is on the county owner record) + pp_entity_conviction.parcel_match ('document' | 'name_only' | null).
 --    pp_compute_convergence caps name_only leads at 84 (cannot reach the top tier); pp_conviction_queue exposes parcel_match.
 --    Old defs in pp_function_backup. Undo: re-execute the saved defs, then recompute.
+-- H. pp_parcel_match_c_recorded_docs_20261121 / _d_summit_docs: 44 more confirmations (method recorded_document_on_parcel):
+--    Utah 22 (the parcel's abstract of title lists a document naming the lead), Wasatch 11 incl. Moseley (the parcel's vesting
+--    deed, TaxEntry, via OnBase keyword 328 'Entry #', names the lead as grantee), Summit 11 (Eagle Web documents searched by
+--    parcel serial). Not confirmed: Richardson Dennis G (QCD 91315-2026 conveyed 39:109:0014 to DBD DCD INVESTMENTS LLC, now
+--    the owner — possible sale, left for review), Neider and Paul (only an outbound deed found). Salt Lake: no free recorder.
