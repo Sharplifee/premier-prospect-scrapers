@@ -60,3 +60,9 @@
 --    Oleson John Raymond: parcel 00-0021-0112 vested 580832 (Michael Oleson -> Michael Jay Oleson TR) — family, kept.
 --    pp_unlink_smith_steven_b_20261121: 00-0021-5902 is SMITH STEVEN KLAY / KRISTEN C (WD 517753), not Steven B Smith; owner_key
 --      cleared, row backed up in pp_backup_sl_rekey_side_20261121 (tbl 'pp_parcel_intel:unlink_smith').
+-- J. Full-system audit (~4:30 PM MT).
+--    pp_parcel_match_filing_parcel_20261121: parcel_match = 'document' when the lead's own filing names a parcel on file
+--      (2,301 live leads, 109 top tier, had a blank label because the parcel row's owner_key is a spouse or empty).
+--    pp_integrity_name_only_top_20261121: pp_integrity_check gains name_only_top and top_without_contact (both must be 0).
+--    Old defs in pp_function_backup. Recompute + gate run 44957540015: invariants PASSED, 0 mismatches.
+--    Found, not changed (RLS rule): view pp_buyer_queue is not security_invoker and returns buyer rows to the public anon key.
