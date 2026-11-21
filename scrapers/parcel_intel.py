@@ -88,6 +88,13 @@ def resolve_parcels_by_name(limit):
         pg=requests.get(f"{SB}/rest/v1/pp_parcel_intel?select=owner_key&owner_key=not.is.null&order=parcel_serial&limit=1000&offset={off}",headers=H,timeout=60).json()
         have|={x['owner_key'] for x in pg}; off+=1000
         if len(pg)<1000: break
+    # Nov 21 2026: a parcel can belong to several leads (co-owners, name variants). The extra owners live in
+    # pp_parcel_owner_link; a database trigger on pp_parcel_intel adds a link instead of overwriting owner_key.
+    off=0
+    while True:
+        pg=requests.get(f"{SB}/rest/v1/pp_parcel_owner_link?select=owner_key&active=is.true&order=parcel_serial,owner_key&limit=1000&offset={off}",headers=H,timeout=60).json()
+        have|={x['owner_key'] for x in pg}; off+=1000
+        if len(pg)<1000: break
     # owners whose signals already carry a parcel are handled by the parcel loop
     with_parcel=set()
     for i in range(0,len(owners),80):
