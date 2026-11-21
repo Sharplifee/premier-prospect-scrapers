@@ -15,3 +15,13 @@
 --    pp_compute_convergence (parcel_roll, property_confirmed, mailing_confirmed), pp_lead_city, pp_lead_point read owners from
 --    pp_parcel_owners instead of pp_parcel_intel.owner_key. Old defs in pp_function_backup (saved just before).
 --    Undo: re-execute the three saved defs from pp_function_backup, then recompute.
+
+-- C. Deed review of the 16 different-surname links (backup pp_backup_owner_link_20261121, 11 rows, explicit IDs):
+--    activated 6 Wasatch joint tenants (Olear, Holl, Rastogi, Perry, Allred, Mahoney: Owner_2 on the current Wasatch record)
+--    and 3 Summit name variants (Dombrowski/Nemeckay, Lund/Unanue, Drass/Rudow). Left inactive: Johnson J Steven (county shows
+--    Steven A Johnson), Nelson (successor conveyed to family: Losee Ashlyn Rylee, Housel Kyle Bradley — lead kept),
+--    Papworth, Wilson, Benson, Moore, Harrison (sold; all five already resolved, no new retirement needed).
+--    The 10 cross-county links are the same owners on the same Utah County deed entries; all kept.
+-- D. pp_health_monitor_ontime_20261121: pg_cron 'pp-health-monitor-ontime' '41 13,14 * * *' dispatches health-monitor.yml
+--    (vault gh_dispatch_token, same as job 175). Test dispatch 10:25 AM MT -> HTTP 204, run 44929960371 success.
+--    Undo: select cron.unschedule('pp-health-monitor-ontime');

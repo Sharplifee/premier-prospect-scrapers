@@ -9,6 +9,8 @@ on:
     - cron: '41 13 * * *'   # 7:41 AM MDT
     # Fallback so one late or dropped run can't skip a day: 1:17 PM UTC (6:17 AM MST / 7:17 AM MDT).
     - cron: '17 13 * * *'
+  # On-time backup (Nov 21 2026): GitHub ran these schedules ~7 hours late, so Supabase pg_cron job
+  # 'pp-health-monitor-ontime' (41 13,14 * * * UTC = 6:41 and 7:41 AM MST) dispatches this workflow on the minute.
   workflow_dispatch:
   # Event-driven backup: GitHub queues scheduled runs for hours, so also check right after the nightly enrichment finishes.
   workflow_run:
