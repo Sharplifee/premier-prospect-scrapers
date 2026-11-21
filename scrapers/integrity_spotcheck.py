@@ -17,9 +17,10 @@ SB=os.environ['SUPABASE_URL'].rstrip('/'); KEY=os.environ['SUPABASE_SERVICE_KEY'
 H={'apikey':KEY,'Authorization':'Bearer '+KEY,'Content-Type':'application/json'}
 S=requests.Session(); S.headers['User-Agent']='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36'
 # what each county document kind is allowed to be stored as
+# Nov 21 2026: Utah County 'TR D' is a TRUST deed (a loan); 'TEE D' is the trustee's deed that ends a foreclosure.
 ALLOWED={'ND':{'nod'},'CAN ND':{'nod_cancelled'},'SUB TEE':{'trustee_substitution'},'SUBTEE':{'trustee_substitution'},
          'RSUBTEE':{'loan_reconveyance'},'PRSUBTE':{'loan_reconveyance'},'AF DC':{'death_affidavit'},'AF DC W':{'death_affidavit'},
-         'LP':{'lis_pendens'},'REL LP':{'lis_pendens_release'},'TR D':{'trustee_deed'},'PR D':{'probate_deed'},'N LN':{'lien_judgment','mechanics_lien'},
+         'LP':{'lis_pendens'},'REL LP':{'lis_pendens_release'},'TR D':{'deed_of_trust','historical_mortgage'},'TEE D':{'trustee_deed'},'PR D':{'probate_deed'},'N LN':{'lien_judgment','mechanics_lien'},
          'JUDG':{'lien_judgment'},'ABST JU':{'lien_judgment'},'D TR':{'deed_of_trust'},'WD':{'deed_transfer','comparable_sale'},'SP WD':{'deed_transfer','comparable_sale'},'QCD':{'deed_transfer','family_transfer'}}
 fails=[]
 def _call(method, url, **kw):

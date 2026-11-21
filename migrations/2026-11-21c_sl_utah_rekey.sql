@@ -19,3 +19,14 @@
 --    pp_guard_retired_source now also drops rows from comparable-sales-slco and slco-recorder-live.
 --    Code: both scrapers pinned to county 'Utah' (run_all.py, scrapers_realtime.py).
 --    Undo: restore rows from pp_backup_sl_rekey_side_20261121; restore the old pp_guard_retired_source list.
+
+-- C. pp_hold_review_martin_richins_20261121 (backup rows in pp_backup_sl_rekey_side_20261121, tbl 'pp_parcel_intel:hold_review')
+--    Jennifer Martin: Salt Lake GIS owner 'JENNIFER GAIL MARTIN (JT); JOSEPH TYLER MARTIN (JT)' = both parties on divorce case
+--    254904894 -> mailing 8676 S SCOTIA LN, SANDY UT 84093 filled on 28032260170000 (saltlake_intel.py never saved mailing; fixed).
+--    Jennifer Richins: Wasatch parcel 00-0021-9084 (RICHINS JENNIFER / RICHINS NICOLE JT), the only parcel in her name; NOD 581887.
+--    Griffin Justin stays held: no Wasatch parcel in his name (lis pendens 581857 by Geneva Rock).
+-- D. pp_tr_d_is_trust_deed_20261121: Utah County 'TR D' is a trust deed (loan), not a trustee's deed. 25 slco-recorder-live rows
+--    (12 leads, 9 wrongly retired as "foreclosure completed") relabelled deed_of_trust, score 35.
+--    Staging pp_trd_relabel_20261121, backup pp_backup_trd_relabel_20261121. Code: scrapers_realtime.py KOI map and
+--    integrity_spotcheck.py ALLOWED ('TR D' -> deed_of_trust; 'TEE D' -> trustee_deed).
+--    Undo: update pp_scraper_signals s set signal_type=b.signal_type, score=b.score from pp_backup_trd_relabel_20261121 b where s.id=b.id;

@@ -253,7 +253,8 @@ def scrape_slco_recorder():
     KOI_MAP = {
         'ND':     ('nod',          88),
         'CAN ND': ('nod_cancelled', 25),
-        'TR D':   ('trustee_deed', 85),
+        'TR D':   ('deed_of_trust', 35),   # Nov 21 2026: TR D is a trust deed (new loan), not a trustee's deed
+        'TEE D':  ('trustee_deed', 85),
         'WD':     ('deed_transfer', 55),
         'C WD':   ('deed_transfer', 52),
         'Q CD':   ('deed_transfer', 58),
