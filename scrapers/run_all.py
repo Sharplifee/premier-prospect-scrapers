@@ -4,7 +4,7 @@ Fixes June 17 2026: DEED OF TRUST removed, WARN Act county map, FSBO Utah filter
 Commercial-grade: retry logic, source health monitoring,
 correct dedup, no broken scrapers, single __main__, no undefined refs.
 """
-import os, hashlib, logging, requests, re, json, time, datetime, html
+import os, sys, hashlib, logging, requests, re, json, time, datetime, html
 
 # Real-time upgraded scrapers — HMDA 2024 live, SLCO recorder, AGRC parcels
 try:
@@ -210,6 +210,9 @@ def _source_count(source_slug):
             log.warning(f'count {source_slug} attempt {attempt + 1}: {type(e).__name__}')
     return None
 
+from db_wait import wait_for_db   # Nov 21 2026: shared wait-for-database with backoff
+_LOST_ROWS = 0
+
 def post_batch(records):
     if not records: return 0
     seen, unique = set(), []
@@ -236,18 +239,26 @@ def post_batch(records):
     source_slug = unique[0].get('source_slug', '') if unique else ''
     before_count = _source_count(source_slug)
 
+    global _LOST_ROWS
     for i in range(0, len(unique), 200):
         chunk = unique[i:i+200]
-        for attempt in range(3):
+        saved = False
+        # Nov 21 2026: 3 quick tries, then wait out a database dropout (db_wait backoff, up to 10 min) and try once more.
+        # A chunk that still can't be written is counted, and the run fails at the end instead of reporting success.
+        for attempt in range(4):
+            if attempt == 3:
+                if not wait_for_db(600, f'insert {source_slug}'): break
             try:
                 r = SESSION.post(TABLE_URL, json=chunk, headers=HEADERS, timeout=45)
                 if r.status_code in (200, 201, 204, 409):
-                    break
+                    saved = True; break
                 log.error(f"Batch insert {r.status_code}: {r.text[:100]}")
-                time.sleep(5)
             except Exception as e:
                 log.error(f"Batch insert error: {e}")
-                if attempt < 2: time.sleep(5)
+            if attempt < 2: time.sleep(5 * (attempt + 1))
+        if not saved:
+            _LOST_ROWS += len(chunk)
+            log.error(f"::error::post_batch [{source_slug}]: {len(chunk)} rows NOT saved (database unreachable after retries)")
 
     if before_count is not None:
         after_count = _source_count(source_slug)
@@ -2420,6 +2431,13 @@ if __name__ == '__main__':
     # chained all steps inside one function. Now: each step separate, each with
     # its own timeout. KPI counts only read from small indexed tables.
     log.info('Refreshing pipeline intelligence...')
+    # Nov 21 2026: count refresh steps that still fail after their retries, so the run fails loudly instead of green
+    class _ErrCount(logging.Handler):
+        n = 0
+        def emit(self, rec): _ErrCount.n += rec.levelno >= logging.ERROR
+    _errs = _ErrCount(); log.addHandler(_errs)
+    if not wait_for_db(1200, 'pipeline refresh'):
+        log.error('  database unreachable before the pipeline refresh')
     # Nov 21 2026: one recompute at a time across all callers (see scrapers/pp_recompute.sh). Wait for the lease; if it
     # is not free within 40 min, carry on as before (each step below still logs its own result).
     _holder = f"scraper-run#{os.environ.get('GITHUB_RUN_ID', os.getpid())}"
@@ -2435,12 +2453,21 @@ if __name__ == '__main__':
     log.info(f'  recompute lease acquired after {int(time.time() - _t0)}s')
     _orig_post = requests.post
     def _post_retry(url, *a, **kw):
-        # lock (55P03) or statement timeout (57014) from an overlapping recompute: wait and retry instead of failing
-        for attempt in range(6):
-            r = _orig_post(url, *a, **kw)
-            if r.status_code < 400 or attempt == 5 or not ('55P03' in r.text or '57014' in r.text or r.status_code >= 500):
-                return r
-            log.warning(f'  {url.rsplit("/", 1)[-1]}: {r.status_code} lock/timeout, retry {attempt + 1} in 30s'); time.sleep(30)
+        # lock (55P03) or statement timeout (57014) from an overlapping recompute: wait and retry instead of failing.
+        # Nov 21 2026: a database dropout (5xx such as 522, or no connection at all) gets the same retries with backoff
+        # (30s, 60s, 120s, 240s, 300s); a connection error no longer crashes the refresh.
+        r = None
+        for attempt, wait in enumerate((30, 60, 120, 240, 300, 0)):
+            try:
+                r = _orig_post(url, *a, **kw)
+                if r.status_code < 400 or not ('55P03' in r.text or '57014' in r.text or r.status_code >= 500):
+                    return r
+                why = f'{r.status_code} lock/timeout/outage'
+            except requests.exceptions.RequestException as e:
+                why = type(e).__name__
+            if not wait: break
+            log.warning(f'  {url.rsplit("/", 1)[-1]}: {why}, retry {attempt + 1} in {wait}s'); time.sleep(wait)
+        if r is None: raise RuntimeError(f'{url.rsplit("/", 1)[-1]}: database unreachable after retries')
         return r
     requests.post = _post_retry
 
@@ -2536,6 +2563,13 @@ if __name__ == '__main__':
     requests.post = _orig_post
     _lease('pp_recompute_lease_release', p_holder=_holder)
     log.info('Pipeline intelligence refresh complete.')
+    log.removeHandler(_errs)
+    if _LOST_ROWS or _ErrCount.n:
+        print(f"::error::run finished with {_LOST_ROWS} rows not saved and {_ErrCount.n} failed refresh steps (database dropout?)", flush=True)
+        _exit_code = 1
+    else:
+        _exit_code = 0
 
     log.info(f'=== Done — {total} total signals ===')
     log.info(f'Top sources: {sorted(results.items(), key=lambda x: -x[1])[:10]}')
+    sys.exit(_exit_code)

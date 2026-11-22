@@ -9,6 +9,8 @@
 set -uo pipefail
 : "${SUPABASE_URL:?}" "${SUPABASE_SERVICE_KEY:?}"
 HOLDER="${GITHUB_WORKFLOW:-local}#${GITHUB_RUN_ID:-$$}"
+# Nov 21 2026: ride out a database dropout first (backoff up to 20 min, scrapers/db_wait.py); fail loudly if still down
+python3 "$(dirname "$0")/db_wait.py" "${DB_WAIT_MAX:-1200}" || exit 1
 H=(-H "apikey: $SUPABASE_SERVICE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" -H "Content-Type: application/json")
 FNS="${PP_RECOMPUTE_FNS:-pp_compute_convergence pp_compute_buyers pp_refresh_app_cache pp_refresh_map_and_perf_bt pp_refresh_kpi_cache}"
 rpc() { curl -s -o /tmp/pp_rpc.txt -w "%{http_code}" -X POST "${H[@]}" "$SUPABASE_URL/rest/v1/rpc/$1" -d "$2" --max-time 180; }
@@ -26,9 +28,11 @@ for fn in $FNS; do
   for attempt in 1 2 3 4 5 6; do
     code=$(rpc "$fn" '{}')
     echo "$fn -> $code $(head -c 40 /tmp/pp_rpc.txt)"
-    [ "$code" -lt 400 ] && break
-    if [ "$attempt" -lt 6 ] && { [ "$code" -ge 500 ] || grep -q -E '55P03|57014' /tmp/pp_rpc.txt; }; then
-      echo "  $fn: lock or timeout (attempt $attempt) — retrying in 30s"; sleep 30; continue
+    # Nov 21 2026: 000 = no connection at all (curl gave up); before this it counted as success because 000 < 400
+    [ "$code" != "000" ] && [ "$code" -lt 400 ] && break
+    if [ "$attempt" -lt 6 ] && { [ "$code" = "000" ] || [ "$code" -ge 500 ] || grep -q -E '55P03|57014' /tmp/pp_rpc.txt; }; then
+      wait=$(( 30 * (1 << (attempt - 1)) )); [ "$wait" -gt 300 ] && wait=300    # 30, 60, 120, 240, 300s
+      echo "  $fn: lock, timeout or database dropout (attempt $attempt) — retrying in ${wait}s"; sleep "$wait"; continue
     fi
     echo "::error::$fn failed: $(head -c 300 /tmp/pp_rpc.txt)"; exit 1
   done

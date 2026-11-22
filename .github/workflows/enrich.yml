@@ -41,6 +41,9 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Wait for the database
+        # Nov 21 2026: ride out a short Supabase dropout (backoff up to 20 min); fail loudly if it is still down
+        run: python scrapers/db_wait.py 1200
 
       - name: Historical mortgage (oldest outstanding trust deed per owner)
         run: timeout 20m python scrapers/historical_mortgage_enrichment.py || echo "mortgage step ended (timeout or error) — continuing"

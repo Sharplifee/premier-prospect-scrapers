@@ -65,6 +65,10 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4 pdfplumber httpx
 
+      - name: Wait for the database
+        # Nov 21 2026: ride out a short Supabase dropout (backoff up to 20 min); fail loudly if it is still down
+        run: python scrapers/db_wait.py 1200
+
       - name: Run scrapers
         id: scrapers
         run: python scrapers/run_all.py

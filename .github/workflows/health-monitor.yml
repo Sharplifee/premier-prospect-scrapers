@@ -26,8 +26,31 @@ jobs:
     # After enrichment, skip enrichment runs that were dispatched (this job's own re-runs), so they can't re-trigger it in a loop.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
+      # Nov 21 2026: the database dropped out for ~100 min and again for ~1 min. Wait it out with backoff (up to
+      # 12 min) so a blip is not reported as an outage; if it is still down, alert by text + call and fail.
+      - uses: actions/checkout@v4
+      - name: Wait for the database
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          ALERT_TO: ${{ secrets.ALERT_TO }}
+        run: |
+          pip install -q requests
+          if python3 scrapers/db_wait.py 720; then exit 0; fi
+          if [ -n "${TWILIO_SID:-}" ] && [ -n "${ALERT_TO:-}" ]; then
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Calls.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode 'Twiml=<Response><Say voice="Polly.Joanna">Premier Prospect alert. The database has been unreachable for over ten minutes. The app, CRM and nightly jobs are down.</Say></Response>' > /dev/null || true
+            curl -s -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_SID/Messages.json" \
+              --user "$TWILIO_SID:$TWILIO_TOKEN" --data-urlencode "From=$TWILIO_FROM" --data-urlencode "To=$ALERT_TO" \
+              --data-urlencode "Body=🔴 Premier Prospect: database unreachable for 12+ min — app, CRM and nightly jobs are down" > /dev/null || true
+          fi
+          exit 1
       - name: Check last scraper run and re-trigger if stale
         env:
           # GITHUB_TOKEN cannot dispatch workflows — GitHub blocks it to prevent
