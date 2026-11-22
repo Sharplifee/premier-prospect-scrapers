@@ -2377,7 +2377,10 @@ if __name__ == '__main__':
     total = 0
     results = {}
 
+    # Nov 21 2026: ONLY_SOURCES (comma-separated slugs) re-runs just those sources, e.g. to re-pull a run that timed out.
+    _only = {x.strip() for x in os.environ.get('ONLY_SOURCES', '').split(',') if x.strip()}
     for slug, fn in SCRAPERS:
+        if _only and slug not in _only: continue
         t0 = time.time()
         try:
             n = fn() or 0

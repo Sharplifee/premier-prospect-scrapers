@@ -1,0 +1,26 @@
+name: Re-run sources
+# Nov 21 2026: re-pull one or more sources (comma-separated slugs) through the normal scraper path — same dedupe, run log,
+# recompute lease and refresh — e.g. after a run timed out.
+on:
+  workflow_dispatch:
+    inputs:
+      sources: { description: 'Comma-separated source slugs', required: true }
+concurrency: { group: pp-rerun-sources, cancel-in-progress: false }
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      FORCE_RERUN: 'true'
+      ONLY_SOURCES: ${{ github.event.inputs.sources }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install -q requests beautifulsoup4 pdfplumber httpx
+      - name: Run the named sources
+        run: python scrapers/run_all.py
+      - name: Gate
+        run: python scrapers/integrity_spotcheck.py
