@@ -80,6 +80,14 @@
 --      (the layer now rejects 60 after ~55s), and pages every read (REST caps at 1,000 rows, so earlier runs re-wrote
 --      parcels already on file). Backfill run 44963074299: +2,721 map points (7,424 -> 10,145); Utah queue parcels with a
 --      parcel serial and no map point: 65 left (not in the state layer). post_batch counts retry 3x with a 45s timeout.
---    Deseret News obituaries removed: the old page 404s and the new /obituaries/ section is news headlines, not death
---      notices. Run 44962038559 inserted 4 headline rows (ids 4668987-4668990) as leads — PENDING removal by explicit ID
---      (migration pp_remove_deseret_headlines_20261121, backup table pp_backup_deseret_headlines_20261121): approval cancelled.
+--    Deseret News obituaries removed: the old page 404s and the new /obituaries/ section is news headlines, not death notices.
+-- L. ~5:30 PM MT. pp_remove_headline_obituaries_20261121 (backup pp_backup_headline_obits_20261121: 34 signals, 17 leads,
+--    4 score-history rows): removed by explicit ID 34 obituary-source rows whose "name" was a news headline — 4 from the
+--    Deseret test pull (4668987-4668990) and 30 Herald Extra sidebar items from Jun 7 (15 + 15 legacy copies). The real
+--    Jun 7 notices (2554302-2554304, 2588869-2588871) kept. New insert guard pp_guard_headline_name drops obituary rows whose
+--    name is headline-shaped (flags exactly those 34 and none of the other obituary rows); run_all.py applies the same rule.
+--    Undo: re-insert rows from the backup table; drop trigger pp_guard_headline_name.
+--    pp_richardson_family_llc_label_20261121: pp_lead_label 'Owned by family LLC', successor 'DBD DCD INVESTMENTS LLC —
+--    Mark D. Richardson, manager', mailing 613 Mountaineer Cir, Tooele (confirmed). pp_mail_export_successor_20261121:
+--    pp_app_mail_export addresses a confirmed successor instead of the original owner (old def in pp_function_backup).
+--    run_all.py ONLY_SOURCES + .github/workflows/rerun-sources.yml: re-pull named sources (court calendars after timeouts).
