@@ -611,6 +611,8 @@ def scrape_court_calendars():
                     m = re.search(r'ESTATE OF\s+(.+?)(?:,|$)', html.unescape(parties), re.I); owner = m.group(1).strip() if m else None
                 else: owner = a[0].strip()
                 if not owner or pp_is_inst_local(owner): continue
+                # Nov 21 2026: a placeholder party ("ALL CLAIMANTS TO SURPLUS FUNDS", "JOHN DOE", "UNKNOWN HEIRS") is not an owner
+                if re.search(r'\b(all claimants|claimants to|surplus funds|unknown heirs|unknown persons|all persons|all unknown|parties unknown|unknown owners?|occupants?|john doe|jane doe)\b', owner, re.I): continue
                 try:
                     age = datetime.date.today().year - (2000 + int(case[:2]))
                     score = round(score * (1.0 if age <= 1 else 0.75 if age <= 3 else 0.40))
