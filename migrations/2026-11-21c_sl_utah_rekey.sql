@@ -91,3 +91,11 @@
 --    Mark D. Richardson, manager', mailing 613 Mountaineer Cir, Tooele (confirmed). pp_mail_export_successor_20261121:
 --    pp_app_mail_export addresses a confirmed successor instead of the original owner (old def in pp_function_backup).
 --    run_all.py ONLY_SOURCES + .github/workflows/rerun-sources.yml: re-pull named sources (court calendars after timeouts).
+-- M. ~9:55 PM MT. Placeholder court party "ALL CLAIMANTS TO SURPLUS FUNDS" (signals 4516955, 4591711; Orange Title
+--    surplus-fund interpleaders): backup pp_backup_placeholder_claimants_20261121 (2 signals, 2 leads, 2 score rows);
+--    pp_placeholder_claimants_b_signals_20261121 deleted the 2 signals; the recompute drops their leads (no live signal).
+--    Court scraper skips placeholder parties (run_all.py). Cause of the 65: pp_compute_cross_county added +6 after the
+--    59 no-property cap. pp_cross_county_cap_b_fix_20261121: the bonus now respects the caps (no property <= 59,
+--    name-only <= 84); old def in pp_function_backup.
+--    Outage: the project returned 522 for all API calls ~8:10 PM to ~9:50 PM MT, during heavy wiki_nodes/wiki_links
+--    inserts from the Corpus HQ wiki builder (not Premier Prospect).
