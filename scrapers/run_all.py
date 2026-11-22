@@ -1283,6 +1283,14 @@ def scrape_ksl_fsbo_extended():
     return post_batch(signals)
 
 # ─── OBITUARIES ───────────────────────────────────────────────────────────────
+def _OBIT_HEADLINE(name):
+    """True when an obituary card's title is a news headline, not a person's name (Herald sidebar Jun 7: 13 such rows,
+    Deseret Nov 21: 4). Same rule as the pp_guard_headline_name insert guard."""
+    core = re.sub(r'\(\d{4}\s*[-–]\s*\d{4}\)', '', name).strip()
+    return bool(re.search(r'[:?!]', name) or len(core.split()) >= 8 or re.search(
+        r'\b(dies|died|funeral|announced|announces|former|mayor|beloved|wife of|husband of|celebrates|named|urges|feature|events|things to do|commentary|roundup|champions|team|top \d)\b', name, re.I))
+
+
 def scrape_obituaries_enrichment():
     """
     Two confirmed-stable Utah obituary sources — both use <article> tags
@@ -1310,6 +1318,8 @@ def scrape_obituaries_enrichment():
             name_el = card.select_one('h1, h2, h3, [class*=headline], [class*=title]')
             name = name_el.get_text(strip=True) if name_el else ''
             if not name or len(name) < 3 or name in seen: continue
+            if _OBIT_HEADLINE(name):   # Nov 21 2026: news headlines in the page's other cards are not death notices
+                log.info(f'[{slug}] skipped headline: {name[:80]}'); continue
             seen.add(name)
             date_el = card.select_one('time, [class*=date], [class*=timestamp]')
             pub_date = date_el.get('datetime', date_el.get_text(strip=True)) if date_el else ''
