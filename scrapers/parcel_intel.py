@@ -269,14 +269,18 @@ def resolve_divorces(limit):
         # Nov 24 2026: the name search also lists PAST owners, so every candidate parcel is read and kept only when a
         # spouse is on today's title. One spouse alone also has to be one person on the county roll (one owner name).
         both=[k for k,v in sorted(hits.items()) if len(v)>=2]
-        one=[k for k,v in sorted(hits.items()) if len(v)<2 and all(len(owners.get(i,()))==1 for i in v)]
+        rest=[k for k in sorted(hits) if k not in both]
         serial=None; household=False; d=None
-        for k in both+one:
+        for k in both+rest:
+            unique=all(len(owners.get(i,()))==1 for i in hits[k])
+            if k not in both and not unique and len(rest)>3: continue   # a common name with many parcels: do not read them all
             dd=fetch(k); time.sleep(1.3)
-            if dd and dd.get('current_owners') and any(on_title(spouses[i],dd['current_owners']) for i in hits[k]):
-                serial,household,d=k,k in both,dd; break
+            on=sum(on_title(sp,(dd or {}).get('current_owners')) for sp in spouses)
+            # kept when both spouses are on today's title, or one is and that spouse is one person on the county roll
+            if on>=2 or (on==1 and (k in both or unique)):
+                serial,household,d=k,on>=2,dd; break
         if not serial:
-            _record(ck,'no_match: no spouse on current title' if both+one else 'no_match: name not unique on the county roll')
+            _record(ck,'no_match: no spouse on current title' if both+rest else 'no_match: name not unique on the county roll')
             log.info(f'  {spouses[0][:30]:32} not on current title / not unique — left as is'); continue
         case=str(pl.get('entry','')); filed_year = 2000+int(case[:2]) if case[:2].isdigit() else None
         pl.update({'parcel':serial,'household':household,'filed_year':filed_year,'spouses_matched':len({i for v in hits.values() for i in v})})

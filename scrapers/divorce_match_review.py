@@ -43,6 +43,7 @@ def main():
         cur = (d or {}).get('current_owners')
         if failed or not d: v = 'unknown'
         elif not any(P.on_title(x, cur) for x in spouses): v = 'wrong'          # no spouse on today's title
+        elif sum(P.on_title(x, cur) for x in spouses) >= 2: v = 'keep'           # both spouses on today's title
         elif len(sp) >= 2 or any(len(owners.get(i, ())) == 1 for i in sp): v = 'keep'
         else: v = 'wrong'                                                         # name shared by several people on the roll
         counts[v] += 1
