@@ -25,7 +25,8 @@ def app_walk(s, lead, HA, ek, before):
         r = requests.post(f'{SB}/rest/v1/rpc/{name}', headers={**HA, **UA}, json=body, timeout=60)
         return r.status_code, (r.json() if r.text.strip() else None)
     steps = []
-    c, rows = rpc('pp_app_queue', {'p_limit': 50, 'p_search': lead.split(':', 2)[2], 'p_min_docs': 1})
+    # what an agent types in the app's search box: the surname
+    c, rows = rpc('pp_app_queue', {'p_limit': 200, 'p_search': lead.split(':', 2)[2].split()[0], 'p_min_docs': 1})
     steps.append(('app lead list returns the lead', c == 200 and any(r.get('entity_key') == lead for r in rows)))
     for fn in ('pp_app_lead_documents', 'pp_app_call_script'):
         c, _ = rpc(fn, {'p_entity_key': lead}); steps.append((f'app {fn} answers', c == 200))
