@@ -1,0 +1,31 @@
+name: Utah document parcel backfill
+# Nov 24 2026: on-demand run of scrapers/utah_doc_backfill.py (each stored filing gets the parcel its own county
+# document page lists), then recompute + gate. The nightly enrichment runs the same script with DOC_LIMIT=150.
+on:
+  workflow_dispatch:
+    inputs:
+      limit: { description: 'Documents to fix (highest-scoring leads first)', required: false, default: '1800' }
+concurrency: { group: pp-utah-doc-backfill, cancel-in-progress: false }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      DOC_LIMIT: ${{ github.event.inputs.limit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests beautifulsoup4 pdfplumber httpx
+      - name: Wait for the database
+        run: python scrapers/db_wait.py 1200
+      - name: Document parcels
+        run: timeout 60m python scrapers/utah_doc_backfill.py
+      - name: Recompute (lease) + gate
+        if: always()
+        run: |
+          bash scrapers/pp_recompute.sh
+          python scrapers/integrity_spotcheck.py

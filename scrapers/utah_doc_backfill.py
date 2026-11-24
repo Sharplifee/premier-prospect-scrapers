@@ -20,7 +20,12 @@ H = {'apikey': KEY, 'Authorization': 'Bearer ' + KEY, 'Content-Type': 'applicati
 LIMIT = int(os.environ.get('DOC_LIMIT', '600'))
 DRY = os.environ.get('DRY') == '1'
 TYPES = ('death_affidavit', 'probate_deed', 'lien_judgment', 'mechanics_lien', 'nod', 'nod_cancelled',
-         'trustee_substitution', 'lis_pendens', 'trustee_deed')
+         'trustee_substitution', 'lis_pendens', 'trustee_deed',
+         # Nov 24 2026: deeds too. A deed's own county page names the parcel it conveys; with that parcel on file the
+         # recompute confirms the lead's mailing address only when the parcel's tax-notice address is the same one the
+         # lead's own name match found (a parcel since sold to someone else never confirms). Before-image of these rows:
+         # pp_backup_doc_parcel_20261124.
+         'deed_transfer', 'family_transfer', 'lien_release')
 
 
 def payload(row):
