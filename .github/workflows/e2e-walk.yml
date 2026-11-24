@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       lead: { description: 'Entity key (blank = an untouched top-tier reachable lead)', required: false, default: '' }
+      mode: { description: 'web (CRM pages) or app (the iOS app calls, build 109)', required: false, default: 'web' }
 concurrency: { group: pp-qa-device, cancel-in-progress: false }   # one user of the QA session at a time (token rotates)
 jobs:
   qa:
@@ -15,6 +16,7 @@ jobs:
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxidmFvc3lmaWtrcHZjd2tzaXBoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwMDg0MDksImV4cCI6MjA5MDU4NDQwOX0.Gh9whjmUPz4rdKYr5yo8ZHS0nSNpkQUOwdIladX6mG4
       LEAD: ${{ github.event.inputs.lead }}
+      MODE: ${{ github.event.inputs.mode }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

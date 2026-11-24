@@ -17,6 +17,37 @@ def svc(path):
     r = requests.get(f'{SB}/rest/v1/{path}', headers=HS, timeout=60); r.raise_for_status(); return r.json()
 
 
+def app_walk(s, lead, HA, ek, before):
+    """Nov 24 2026: the iOS app's own call sequence for one lead (Sources/PremierProspectApp.swift, build 109): lead list,
+    lead detail calls, call logged, note, appointment, deal, ledger. Same RPCs, same parameters, the app's user agent."""
+    UA = {'User-Agent': 'PremierProspect/109 CFNetwork/3896.200.61 Darwin/27.2.0 (QA walk)', 'Content-Type': 'application/json'}
+    def rpc(name, body):
+        r = requests.post(f'{SB}/rest/v1/rpc/{name}', headers={**HA, **UA}, json=body, timeout=60)
+        return r.status_code, (r.json() if r.text.strip() else None)
+    steps = []
+    c, rows = rpc('pp_app_queue', {'p_limit': 50, 'p_search': lead.split(':', 2)[2], 'p_min_docs': 1})
+    steps.append(('app lead list returns the lead', c == 200 and any(r.get('entity_key') == lead for r in rows)))
+    for fn in ('pp_app_lead_documents', 'pp_app_call_script'):
+        c, _ = rpc(fn, {'p_entity_key': lead}); steps.append((f'app {fn} answers', c == 200))
+    for ev, oc, nt in (('call', 'contacted', None), ('note', None, NOTE), ('appointment_set', None, None)):
+        body = {'p_entity_key': lead, 'p_event_type': ev, 'p_channel': 'phone', 'p_actor': 'ios'}
+        if oc: body['p_outcome'] = oc
+        if nt: body['p_notes'] = nt
+        c, _ = rpc('pp_record_outcome', body); steps.append((f'app records {ev}', c == 200))
+    c, _ = rpc('pp_save_deal', {'p_id': None, 'p_entity_key': lead, 'p_stage': 'appointment', 'p_list_price': None,
+                                'p_commission_pct': None, 'p_expected_close': None, 'p_notes': NOTE})
+    steps.append(('app saves the deal', c == 200))
+    c, led = rpc('pp_app_ledger', {})
+    led = json.loads(led) if isinstance(led, str) else led
+    steps.append(('deal shows in the app ledger', c == 200 and any(d.get('notes') == NOTE for d in (led or {}).get('deals', []))))
+    c, _ = rpc('pp_app_next_actions', {'p_limit': 15}); steps.append(('app next actions answers', c == 200))
+    lc = svc(f'pp_lead_lifecycle?entity_key=eq.{ek}&select=state,touch_count')
+    steps.append((f'lifecycle moved to appointment ({lc})', bool(lc) and lc[0]['state'] == 'appointment'))
+    ev = svc(f'pp_outcome_events?entity_key=eq.{ek}&select=event_type,outcome,actor')
+    steps.append(('three events written by the QA device', len([e for e in ev if e['actor'] == s['user']['id']]) == 3))
+    return steps
+
+
 def main():
     s = qa_session(); tok = s['access_token']; qa = s['user']['id']
     HA = {'apikey': os.environ['SUPABASE_ANON_KEY'], 'Authorization': f'Bearer {tok}'}
@@ -39,6 +70,13 @@ def main():
                        params={'entity_key': f'eq.{lead}', 'select': 'owner_display,conviction_score,mailing_address,mailing_confirmed,contactable,parcel_match'}).json()[0]
     print('app feed:', json.dumps(row))
 
+    if os.environ.get('MODE') == 'app':
+        steps, errs, dialogs = [], [], []
+        try:
+            steps = app_walk(s, lead, HA, ek, before)
+        finally:
+            cleanup(ek, before)
+        return finish(ek, before, steps, errs, dialogs)
     from playwright.sync_api import sync_playwright
     sess = {'access_token': tok, 'refresh_token': '', 'expires_at': int(time.time() * 1000) + 3000 * 1000, 'user': {'id': qa}}
     steps, errs, dialogs = [], [], []
@@ -85,6 +123,11 @@ def main():
             steps.append(('pipeline page loads', 'pipeline' in p.url))
             b.close()
     finally:
+        cleanup(ek, before)
+    return finish(ek, before, steps, errs, dialogs)
+
+
+def cleanup(ek, before):
         # clean up everything the walk wrote, by id, and put the lifecycle row back as it was
         new_ev = [x['id'] for x in svc(f'pp_outcome_events?entity_key=eq.{ek}&select=id') if x['id'] not in before['event_ids']]
         new_dl = [x['id'] for x in svc(f'pp_deals?entity_key=eq.{ek}&select=id') if x['id'] not in before['deal_ids']]
@@ -98,6 +141,9 @@ def main():
         else:
             r = requests.delete(f'{SB}/rest/v1/pp_lead_lifecycle?entity_key=eq.{ek}', headers={**HS, 'Prefer': 'return=minimal'}, timeout=60)
         print(f'cleanup pp_lead_lifecycle: {r.status_code}')
+
+
+def finish(ek, before, steps, errs, dialogs):
     after = {'lifecycle': svc(f'pp_lead_lifecycle?entity_key=eq.{ek}'),
              'event_ids': [x['id'] for x in svc(f'pp_outcome_events?entity_key=eq.{ek}&select=id')],
              'deal_ids': [x['id'] for x in svc(f'pp_deals?entity_key=eq.{ek}&select=id')]}
