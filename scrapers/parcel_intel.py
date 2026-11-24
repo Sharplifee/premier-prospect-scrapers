@@ -54,7 +54,8 @@ def fetch(serial):
     # Nov 24 2026: the owners the county lists as current (open-ended year, e.g. '2007...'). The name search also returns
     # PAST owners, so a name hit alone does not mean the person still holds the parcel or gets its tax mail.
     seg=t.split('Owner Names',1)[-1].split('-----',1)[0]
-    cur=[n.strip() for y,n in re.findall(r'(\d{4}(?:-\d{4}|\.\.\.|NV))\s+(.*?)(?=\s+\d{4}(?:-\d{4}|\.\.\.|NV)\s|$)',seg) if y.endswith('...')]
+    # entries look like '2007... HALL, CINDY K', '2005-2006 HALL, CINDY H', '2013 WOODRUFF, RUTH M', '2027NV X'
+    cur=[n.strip() for y,n in re.findall(r'\b(\d{4}(?:-\d{4}|\.\.\.|NV)?)\s+(.*?)(?=\s+\d{4}(?:-\d{4}|\.\.\.|NV)?\s|$)',seg) if y.endswith('...')]
     return {'parcel_serial':serial,'county':'Utah','market_value':total,'value_year':int(mv.group(1)) if mv else None,
             'property_address':prop or None,'mailing_address':mail or None,'is_absentee':absentee,'fetched_at':'now()',
             'current_owners':'; '.join(cur) or None,'owners_read_at':'now()'}
