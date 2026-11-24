@@ -5,11 +5,12 @@ on:
   workflow_dispatch:
     inputs:
       limit: { description: 'Documents to fix (highest-scoring leads first)', required: false, default: '1800' }
+      parcels: { description: 'County assessor records to fetch for parcels now on file (0 = skip)', required: false, default: '700' }
 concurrency: { group: pp-utah-doc-backfill, cancel-in-progress: false }
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 130
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -24,6 +25,12 @@ jobs:
         run: python scrapers/db_wait.py 1200
       - name: Document parcels
         run: timeout 60m python scrapers/utah_doc_backfill.py
+      - name: Assessor records for the parcels now on file
+        # Nov 24 2026: the deed backfill names ~530 parcels the assessor step has never fetched; fetch them now
+        # (every Utah lead's parcels, highest score first) instead of 60 a night.
+        if: always() && github.event.inputs.parcels != '0'
+        env: { PARCEL_OWNERS: '20000', PARCEL_LIMIT: '${{ github.event.inputs.parcels }}', BUYER_LIMIT: '0', DIVORCE_LIMIT: '0', OBIT_LIMIT: '0', NAME_LIMIT: '0' }
+        run: timeout 40m python scrapers/parcel_intel.py
       - name: Recompute (lease) + gate
         if: always()
         run: |
