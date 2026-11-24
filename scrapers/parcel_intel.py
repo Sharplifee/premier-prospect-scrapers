@@ -51,8 +51,24 @@ def fetch(serial):
     absentee=None
     if ps and ms and re.search(r'\d',ps):
         absentee = ps[:12] != ms[:12]
+    # Nov 24 2026: the owners the county lists as current (open-ended year, e.g. '2007...'). The name search also returns
+    # PAST owners, so a name hit alone does not mean the person still holds the parcel or gets its tax mail.
+    seg=t.split('Owner Names',1)[-1].split('-----',1)[0]
+    cur=[n.strip() for y,n in re.findall(r'(\d{4}(?:-\d{4}|\.\.\.|NV))\s+(.*?)(?=\s+\d{4}(?:-\d{4}|\.\.\.|NV)\s|$)',seg) if y.endswith('...')]
     return {'parcel_serial':serial,'county':'Utah','market_value':total,'value_year':int(mv.group(1)) if mv else None,
-            'property_address':prop or None,'mailing_address':mail or None,'is_absentee':absentee,'fetched_at':'now()'}
+            'property_address':prop or None,'mailing_address':mail or None,'is_absentee':absentee,'fetched_at':'now()',
+            'current_owners':'; '.join(cur) or None,'owners_read_at':'now()'}
+
+_NOISE={'TRUSTEE','TR','TRS','SUC','JT','DECEASED','JR','SR','II','III','IV','THE','OF','AND','FAMILY','TRUST','REVOCABLE',
+        'LIVING','ET','AL','DEC','PERREP','TEE','AKA','SUCTEE'}
+def _words(x): return [w for w in re.split(r"[^A-Z']+",re.sub(r'\([^)]*\)',' ',(x or '').upper())) if len(w)>=2 and w not in _NOISE]
+def on_title(name,current):
+    """Nov 24 2026: True when `name` ('LAST, FIRST M' or 'FIRST M LAST') is among the county's current owners: same
+    surname followed within three words by a first name with the same first three letters (same test as pp_same_person)."""
+    wa=_words(name); wb=_words(current)
+    if len(wa)<2: return False
+    pairs={(wa[i],wa[i+1]) for i in range(len(wa)-1)}|{(wa[i+1],wa[i]) for i in range(len(wa)-1)}|{(wa[-1],wa[0])}
+    return any(w==sur and any(x[:3]==fst[:3] for x in wb[j+1:j+4]) for sur,fst in pairs for j,w in enumerate(wb))
 
 def index_name(raw):
     """Assessor name search wants 'LAST, FIRST' — strip suffixes and co-owners."""
@@ -123,6 +139,7 @@ def resolve_parcels_by_name(limit):
         for serial in sorted(set(hits))[:4]:
             d=fetch(serial); time.sleep(1.4)
             if not d or d['market_value'] is None: continue
+            if not on_title(nm,d.get('current_owners')): log.info(f'  {nm[:30]:32} {serial} past owner only — skipped'); continue
             d['owner_key']=o['entity_key']
             w=requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
             if w.status_code<400: link_owner(serial,'Utah',o['entity_key'],'exact name on Utah County NameSearch')
@@ -217,8 +234,8 @@ def resolve_divorces(limit):
     divorce_homeowner (88) with the parcel attached; both on the same parcel is
     the marital home (household=true). Filing year comes from the case number.
     Nov 24 2026: reads every unmatched filing (paged) and works through them in check order (see _due), so the older
-    filings are reached. A parcel found for ONE spouse only is taken only when that spouse is one person on the county
-    roll (a single owner name) and both names carry the same middle initial; otherwise the filing is left as it is."""
+    filings are reached. A parcel is taken only when a spouse is on the county's CURRENT title (the name search also lists
+    past owners); a parcel found for ONE spouse only also needs that spouse to be one person on the roll (one owner name)."""
     rows=[]; off=0
     while True:
         pg=requests.get(f"{SB}/rest/v1/pp_scraper_signals?select=id,raw_owner_name,owner_key,raw_payload&signal_type=eq.divorce_filing&county=eq.Utah"
@@ -237,7 +254,7 @@ def resolve_divorces(limit):
         spouses=[obit_to_index(re.sub(r'\s+et al\.?$','',s,flags=re.I)) for s in parties[:2]]
         spouses=[s for s in spouses if s]
         if not spouses: _record(ck,'no_match: no party names'); continue
-        hits={}; owners={}; mid={}; failed=False   # serial -> spouse idxs; spouse -> owner names; spouse -> middle initial agreed
+        hits={}; owners={}; failed=False   # serial -> spouse idxs; spouse -> owner names on the roll
         for si,q in enumerate(spouses):
             try: s=S.get("https://www.utahcounty.gov/LandRecords/NameSearch.asp",params={'av_name':q,'av_valid':'...','Submit':' Search '},timeout=45)
             except Exception as e: log.warning(f'  {q[:28]} {type(e).__name__}'); time.sleep(3); failed=True; continue
@@ -246,24 +263,26 @@ def resolve_divorces(limit):
                 c=[re.sub(r'\s+',' ',html.unescape(re.sub(r'<[^>]+>','',x))).strip() for x in re.findall(r'<td[^>]*>(.*?)</td>',m.group(1),re.S|re.I)]
                 if len(c)>=2 and re.match(r'^\d{2}:\d{3}:\d{4}$',c[1]) and obit_match(q,c[0]):
                     hits.setdefault(c[1],set()).add(si); owners.setdefault(si,set()).add(norm_cmp(index_name(c[0])))
-                    qm=(q.partition(',')[2].split()+['',''])[1][:1]; cm=((index_name(c[0]) or '').partition(',')[2].split()+['',''])[1][:1]
-                    mid[si]=mid.get(si,True) and bool(qm) and qm==cm
         if not hits:
             _record(ck,'error' if failed else 'no_match: no owner on the county roll'); log.info(f'  {spouses[0][:30]:32} renters / no owner match'); continue
-        serial=next((k for k,v in hits.items() if len(v)>=2), None)
-        household = serial is not None
-        if not household:
-            # one spouse only: safe only when that spouse is one person on the roll with a matching middle initial
-            ok=[k for k,v in sorted(hits.items()) if all(len(owners.get(i,()))==1 and mid.get(i) for i in v)]
-            if not ok: _record(ck,'no_match: name not unique on the county roll'); log.info(f'  {spouses[0][:30]:32} name not unique — left as is'); continue
-            serial=ok[0]
+        # Nov 24 2026: the name search also lists PAST owners, so every candidate parcel is read and kept only when a
+        # spouse is on today's title. One spouse alone also has to be one person on the county roll (one owner name).
+        both=[k for k,v in sorted(hits.items()) if len(v)>=2]
+        one=[k for k,v in sorted(hits.items()) if len(v)<2 and all(len(owners.get(i,()))==1 for i in v)]
+        serial=None; household=False; d=None
+        for k in both+one:
+            dd=fetch(k); time.sleep(1.3)
+            if dd and dd.get('current_owners') and any(on_title(spouses[i],dd['current_owners']) for i in hits[k]):
+                serial,household,d=k,k in both,dd; break
+        if not serial:
+            _record(ck,'no_match: no spouse on current title' if both+one else 'no_match: name not unique on the county roll')
+            log.info(f'  {spouses[0][:30]:32} not on current title / not unique — left as is'); continue
         case=str(pl.get('entry','')); filed_year = 2000+int(case[:2]) if case[:2].isdigit() else None
         pl.update({'parcel':serial,'household':household,'filed_year':filed_year,'spouses_matched':len({i for v in hits.values() for i in v})})
         w=requests.patch(f"{SB}/rest/v1/pp_scraper_signals?id=eq.{r['id']}",json={'signal_type':'divorce_homeowner','score':88 if household else 84,'parcel_serial':serial,
               'raw_address':f'Divorce — homeowner{" (marital home)" if household else ""} — parcel {serial}','raw_payload':json.dumps(pl)},headers={**H,'Prefer':'return=minimal'},timeout=30)
         if w.status_code>=400: log.error(f'  {spouses[0][:28]} promote {w.status_code} {w.text[:80]}'); _record(ck,'error'); continue
         _record(ck,'matched '+serial)
-        d=fetch(serial); time.sleep(1.3)
         if d and d['market_value']: d['owner_key']=r['owner_key']; requests.post(f"{SB}/rest/v1/pp_parcel_intel?on_conflict=parcel_serial",json=d,headers={**H,'Prefer':'resolution=merge-duplicates,return=minimal'},timeout=30)
         n+=1; log.info(f"  {spouses[0][:30]:32} HOMEOWNER{' · marital home' if household else ''} {serial} filed {filed_year}{' $'+format(d['market_value'],',') if d and d['market_value'] else ''}")
     log.info(f'promoted {n} divorce filings to divorce_homeowner'); return n
