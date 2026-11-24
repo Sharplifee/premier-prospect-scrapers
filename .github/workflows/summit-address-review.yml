@@ -1,0 +1,19 @@
+name: Summit address review (read-only)
+# Nov 24 2026: checks each Summit lead whose mailing address comes from another lead's parcel row against the county's
+# current owner of that parcel. Prints keep / wrong / unknown per lead; writes nothing.
+on: workflow_dispatch
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests
+      - run: python scrapers/summit_address_review.py | tee review.jsonl
+      - uses: actions/upload-artifact@v4
+        with: { name: summit-address-review, path: review.jsonl }
