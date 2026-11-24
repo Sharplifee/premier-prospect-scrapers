@@ -48,7 +48,12 @@ def main():
             ctx.add_init_script(f"try{{localStorage.setItem('pp.session', {json.dumps(json.dumps(sess))})}}catch(e){{}}")
             p = ctx.new_page(); p.on('pageerror', lambda e: errs.append(str(e)))
             p.on('dialog', lambda d: (dialogs.append(d.message), d.accept()))
-            p.goto(f'{BASE}/leads.html?scope=all&t={int(time.time())}', wait_until='networkidle'); p.wait_for_selector('#rows table', timeout=40000)
+            for attempt in (1, 2):
+                p.goto(f'{BASE}/leads.html?scope=all&t={int(time.time())}', wait_until='networkidle')
+                try: p.wait_for_selector('#rows table', timeout=60000); break
+                except Exception:
+                    print(f'leads page not ready (attempt {attempt}) at {p.url}: {p.inner_text("body")[:600]!r}')
+                    if attempt == 2: raise
             gate = p.evaluate("() => !!document.querySelector('input[type=password]') || /login\\.html/.test(location.href)")
             steps.append(('no login or gate on the leads page', not gate))
 
