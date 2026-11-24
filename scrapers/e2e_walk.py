@@ -27,7 +27,9 @@ def main():
             'select': 'entity_key,owner_display,conviction_score,lifecycle_state', 'conviction_score': 'gte.85',
             'contactable': 'is.true', 'order': 'conviction_score.desc', 'limit': '200'}).json()
         worked = {x['entity_key'] for x in svc('pp_lead_lifecycle?select=entity_key')} | {x['entity_key'] for x in svc('pp_deals?select=entity_key')}
-        lead = next(c['entity_key'] for c in cand if c['entity_key'] not in worked and not c.get('lifecycle_state'))
+        if not isinstance(cand, list): sys.exit(f'queue read failed: {str(cand)[:300]}')
+        print(f'{len(cand)} top-tier reachable candidates; lifecycle states seen: {sorted({str(c.get("lifecycle_state")) for c in cand})}')
+        lead = next(c['entity_key'] for c in cand if c['entity_key'] not in worked and c.get('lifecycle_state') in (None, 'new'))
     ek = requests.utils.quote(lead, safe='')
     before = {'lifecycle': svc(f'pp_lead_lifecycle?entity_key=eq.{ek}'),
               'event_ids': [x['id'] for x in svc(f'pp_outcome_events?entity_key=eq.{ek}&select=id')],
