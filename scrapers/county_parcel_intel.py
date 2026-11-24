@@ -47,8 +47,13 @@ def arcgis(url, where, fields, n=50):
             if 'error' in j: raise RuntimeError(str(j['error'])[:160])
             return [f['attributes'] for f in j.get('features', [])]
         except Exception as e:
-            log.warning(f'  arcgis retry {attempt+1}: {type(e).__name__} {str(e)[:120]}'); time.sleep(4)
+            log.warning(f'  arcgis retry {attempt+1}: {type(e).__name__} {str(e)[:120]}'); time.sleep(4 * (attempt + 1))
+    global _ARC_FAILED
+    _ARC_FAILED = True
     return None
+
+
+_ARC_FAILED = False   # set when a county layer failed after retries during the current lead (that lead is re-tried next run)
 
 
 def q(s): return s.replace("'", "''")
@@ -255,9 +260,23 @@ def set_aside_timeshare(key, cands):
     return n
 
 
-def run_county(county, leads, resolver, last_first, serials_by_lead=None):
-    found = skipped = 0
+def record_check(key, county, result):
+    # Nov 24 2026: pp_intel_checks remembers each lookup so the next run starts with leads not checked recently
+    if DRY: return
+    try:
+        requests.post(f'{SB}/rest/v1/pp_intel_checks?on_conflict=entity_key', headers={**H, 'Prefer': 'resolution=merge-duplicates,return=minimal'},
+                      json={'entity_key': key, 'county': county, 'checked_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'result': result}, timeout=30)
+    except Exception as e:
+        log.warning(f'  could not record check for {key[:40]}: {type(e).__name__}')
+
+
+def run_county(county, leads, resolver, last_first, serials_by_lead=None, deadline=None):
+    global _ARC_FAILED
+    found = skipped = errors = 0
     for i, ld in enumerate(leads):
+        if deadline and time.time() > deadline:
+            log.info(f'{county}: time share used after {i} of {len(leads)} leads; the rest go first next run'); break
+        _ARC_FAILED = False
         key, name = ld['entity_key'], ld['owner_display'] or ''
         cands = []
         if serials_by_lead and serials_by_lead.get(key):
@@ -269,31 +288,47 @@ def run_county(county, leads, resolver, last_first, serials_by_lead=None):
                 cands += resolver(n); time.sleep(0.6)
         good, why = pick(name, cands, last_first)
         if not good:
-            skipped += 1
+            if _ARC_FAILED:
+                errors += 1; record_check(key, county, 'error')
+            else:
+                skipped += 1; record_check(key, county, 'no_match: ' + str(why)[:80])
             if i < 40 or i % 50 == 0: log.info(f'  {county} {name[:40]:42} skip: {why}')
             continue
         for c in good[:6]:
             write(key, county, c)
+        record_check(key, county, 'matched')
         found += 1
         log.info(f"  {county} {name[:40]:42} -> {good[0]['owner'][:30]} | {good[0]['mailing'][:45]} | ${good[0]['value'] or 0:,}")
-    log.info(f'{county}: {found} leads matched, {skipped} skipped (no safe match)')
+    log.info(f'{county}: {found} leads matched, {skipped} skipped (no safe match), {errors} left for the next run (county layer error)')
     return found
 
 
 def main():
     limit = int(os.environ.get('COUNTY_LIMIT', '3000'))
     counties = [c.strip() for c in os.environ.get('COUNTIES', 'Summit,Wasatch,Salt Lake').split(',')]
+    # Nov 24 2026: each county gets an equal share of the step's time (COUNTY_MINUTES, default 18), and leads are taken
+    # never-checked first (highest score first), then least recently checked. A lead with no safe match is not
+    # re-checked for 7 days; one that hit a county layer error is retried next run. Before this the step re-checked the
+    # same top 400 Summit leads every night and rarely reached Wasatch or Salt Lake.
+    share = float(os.environ.get('COUNTY_MINUTES', '18')) * 60 / max(len(counties), 1)
+    week_ago = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() - 7 * 86400))
     for county in counties:
         ce = requests.utils.quote(county)
-        leads = page(f'pp_entity_conviction?select=entity_key,owner_display&county=eq.{ce}&resolved_flag=is.false&mailing_address=is.null&order=conviction_score.desc,entity_key')[:limit]
-        log.info(f'{county}: {len(leads)} leads without a mailing address')
+        leads = page(f'pp_entity_conviction?select=entity_key,owner_display,conviction_score&county=eq.{ce}&resolved_flag=is.false&mailing_address=is.null&order=conviction_score.desc,entity_key')
+        checks = {c['entity_key']: c for c in page(f'pp_intel_checks?select=entity_key,checked_at,result&county=eq.{ce}&order=entity_key')}
+        total = len(leads)
+        leads = [l for l in leads if not (l['entity_key'] in checks and checks[l['entity_key']]['result'] != 'error'
+                                          and checks[l['entity_key']]['checked_at'] >= week_ago)]
+        leads.sort(key=lambda l: (l['entity_key'] in checks, (checks.get(l['entity_key']) or {}).get('checked_at') or '', -(l['conviction_score'] or 0)))
+        leads = leads[:limit]
+        log.info(f'{county}: {total} leads without a mailing address; {len(leads)} due for a lookup now')
         serials = None
         if county == 'Summit':
             serials = {}
             for s in page('pp_scraper_signals?select=owner_key,parcel_serial&county=eq.Summit&is_legacy=eq.false&is_institutional=eq.false&parcel_serial=not.is.null&order=id'):
                 serials.setdefault(s['owner_key'], set()).add(s['parcel_serial'])
         resolver = {'Summit': summit_by_name, 'Wasatch': wasatch_by_name, 'Salt Lake': sl_by_name}[county]
-        run_county(county, leads, resolver, last_first=(county != 'Salt Lake'), serials_by_lead=serials)
+        run_county(county, leads, resolver, last_first=(county != 'Salt Lake'), serials_by_lead=serials, deadline=time.time() + share)
 
 
 if __name__ == '__main__':

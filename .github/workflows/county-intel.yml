@@ -1,0 +1,34 @@
+name: County mailing lookup (Summit, Wasatch, Salt Lake)
+# Nov 24 2026: on-demand run of scrapers/county_parcel_intel.py with a bigger time budget than the nightly step, to work
+# through the backlog of leads with no mailing address on each county's free public parcel layer. Same safety rule
+# (an address is attached only when the county's current owner name matches the lead). Then recompute + gate.
+on:
+  workflow_dispatch:
+    inputs:
+      counties: { description: 'Counties', required: false, default: 'Summit,Wasatch,Salt Lake' }
+      minutes:  { description: 'Total lookup minutes (split evenly)', required: false, default: '45' }
+concurrency: { group: pp-county-intel, cancel-in-progress: false }
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      COUNTIES: ${{ github.event.inputs.counties }}
+      COUNTY_MINUTES: ${{ github.event.inputs.minutes }}
+      COUNTY_LIMIT: '3000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Wait for the database
+        run: python scrapers/db_wait.py 1200
+      - name: County lookups
+        run: python scrapers/county_parcel_intel.py
+      - name: Recompute (lease) + gate
+        if: always()
+        run: |
+          bash scrapers/pp_recompute.sh
+          python scrapers/integrity_spotcheck.py
