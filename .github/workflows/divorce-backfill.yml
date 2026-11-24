@@ -1,0 +1,32 @@
+name: Utah divorce homeowner lookup (catch-up)
+# Nov 24 2026: one pass over every Utah divorce filing with no parcel, on the free Utah County owner-name search.
+# Filings are taken never-searched first (pp_intel_checks 'divorce:<id>'); a one-spouse hit is taken only when that
+# spouse is one person on the county roll with the same middle initial. Backup: pp_backup_divorce_filing_20261124.
+on:
+  workflow_dispatch:
+    inputs:
+      limit: { description: 'Filings to search', required: false, default: '800' }
+concurrency: { group: pp-divorce-backfill, cancel-in-progress: false }
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      DIVORCE_ONLY: '1'
+      DIVORCE_LIMIT: ${{ github.event.inputs.limit }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests pdfplumber beautifulsoup4
+      - name: Wait for the database
+        run: python scrapers/db_wait.py 1200
+      - name: Divorce homeowner lookups
+        run: timeout 95m python scrapers/parcel_intel.py
+      - name: Recompute (lease) + gate
+        if: always()
+        run: |
+          bash scrapers/pp_recompute.sh
+          python scrapers/integrity_spotcheck.py
