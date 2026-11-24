@@ -99,7 +99,7 @@
 --    name-only <= 84); old def in pp_function_backup.
 --    Outage: the project returned 522 for all API calls ~8:10 PM to ~9:50 PM MT, during heavy wiki_nodes/wiki_links
 --    inserts from the Corpus HQ wiki builder (not Premier Prospect).
--- N. Nov 24 2026 (~1:30 PM MT). Free-source reach:
+-- N. Nov 24 2026 (~1:00 PM MT). Free-source reach:
 --    pp_intel_checks (RLS on, service only): county_parcel_intel.py remembers each lookup, works through every lead
 --      (never-checked first), shares time across Summit/Wasatch/Salt Lake. County-intel run 45468778622: Summit 482
 --      checked (2 matched), Wasatch 499 (22), Salt Lake 376 (3).
@@ -108,7 +108,7 @@
 --    pp_revert_sold_deed_parcels_20261124: 295 of those filings were deeds where the lead (grantor) conveyed the parcel
 --      to a different person, so the parcel's tax address is the new owner's (e.g. Diane Adams -> Sara & Cory Barker).
 --      Put back exactly from the before-image; the backfill now skips deeds whose grantee is not the grantor.
--- O. Nov 24 2026 (~2:45 PM MT). Summit address guard.
+-- O. Nov 24 2026 (~1:55 PM MT). Summit address guard.
 --    Review run 45484438543 (scrapers/summit_address_review.py, read-only): 137 Summit leads whose address came from
 --      another lead's parcel row, checked against the county's current owner; 94 keep, 43 flagged, reviewed by hand.
 --    pp_same_person(a,b) (v2) + pp_summit_parcel_ok(lead, parcel_owner, serial) + pp_mailing_allow / pp_mailing_block
