@@ -1,0 +1,22 @@
+name: Utah current owner read
+# Nov 24 2026: reads today's owner names for Utah parcels that give leads an address (scrapers/utah_owner_read.py).
+on:
+  workflow_dispatch:
+    inputs:
+      minutes: { description: 'Time budget (minutes)', required: false, default: '95' }
+concurrency: { group: pp-utah-owner-read, cancel-in-progress: false }
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      OWNER_MINUTES: ${{ github.event.inputs.minutes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install -q requests
+      - run: python scrapers/db_wait.py 1200
+      - run: cd scrapers && python utah_owner_read.py
