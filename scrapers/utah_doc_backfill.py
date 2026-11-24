@@ -28,6 +28,18 @@ TYPES = ('death_affidavit', 'probate_deed', 'lien_judgment', 'mechanics_lien', '
          'deed_transfer', 'family_transfer', 'lien_release')
 
 
+DEED_TYPES = ('deed_transfer', 'family_transfer', 'lien_release')
+
+
+def same_person(grantor, grantee):
+    # grantee still names the grantor: same surname (text before the comma) and same first given name
+    gr, ge = (grantor or '').upper().strip(), (grantee or '').upper().strip()
+    if not gr or not ge: return False
+    if gr == ge: return True
+    sur = gr.split(',')[0].strip(); first = (gr.split(',')[1].strip().split() or [''])[0] if ',' in gr else ''
+    return bool(sur and first and ge.startswith(sur + ',') and first in ge)
+
+
 def payload(row):
     p = row.get('raw_payload')
     for _ in range(2):
@@ -66,6 +78,10 @@ def main():
         if not page:
             nopage += 1; continue
         parcel, why = run_all._doc_parcel(entry, page)
+        if parcel and x['signal_type'] in DEED_TYPES and not same_person(p.get('grantor'), p.get('grantee')):
+            # Nov 24 2026: the lead (grantor) conveyed this parcel to someone else; its tax-notice address is the new
+            # owner's, so it must never become the lead's parcel (Diane Adams's QCD to Sara & Cory Barker took their address).
+            parcel, why = None, 'conveyed to another party'
         if not parcel:
             noserial += 1; log.info(f"  {x['signal_type']:18} {entry:12} {why}")
             if not DRY:

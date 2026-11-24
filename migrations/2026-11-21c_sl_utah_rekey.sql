@@ -99,3 +99,12 @@
 --    name-only <= 84); old def in pp_function_backup.
 --    Outage: the project returned 522 for all API calls ~8:10 PM to ~9:50 PM MT, during heavy wiki_nodes/wiki_links
 --    inserts from the Corpus HQ wiki builder (not Premier Prospect).
+-- N. Nov 24 2026 (~1:30 PM MT). Free-source reach:
+--    pp_intel_checks (RLS on, service only): county_parcel_intel.py remembers each lookup, works through every lead
+--      (never-checked first), shares time across Summit/Wasatch/Salt Lake. County-intel run 45468778622: Summit 482
+--      checked (2 matched), Wasatch 499 (22), Salt Lake 376 (3).
+--    utah_doc_backfill.py covers deed filings; before-image pp_backup_doc_parcel_20261124; run 45469023761 gave 1,568
+--      filings their document's parcel; run 45475560834 fetched 487 assessor records.
+--    pp_revert_sold_deed_parcels_20261124: 295 of those filings were deeds where the lead (grantor) conveyed the parcel
+--      to a different person, so the parcel's tax address is the new owner's (e.g. Diane Adams -> Sara & Cory Barker).
+--      Put back exactly from the before-image; the backfill now skips deeds whose grantee is not the grantor.
