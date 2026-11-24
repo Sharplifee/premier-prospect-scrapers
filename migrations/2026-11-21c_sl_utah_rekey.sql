@@ -108,3 +108,13 @@
 --    pp_revert_sold_deed_parcels_20261124: 295 of those filings were deeds where the lead (grantor) conveyed the parcel
 --      to a different person, so the parcel's tax address is the new owner's (e.g. Diane Adams -> Sara & Cory Barker).
 --      Put back exactly from the before-image; the backfill now skips deeds whose grantee is not the grantor.
+-- O. Nov 24 2026 (~2:45 PM MT). Summit address guard.
+--    Review run 45484438543 (scrapers/summit_address_review.py, read-only): 137 Summit leads whose address came from
+--      another lead's parcel row, checked against the county's current owner; 94 keep, 43 flagged, reviewed by hand.
+--    pp_same_person(a,b) (v2) + pp_summit_parcel_ok(lead, parcel_owner, serial) + pp_mailing_allow / pp_mailing_block
+--      (RLS on, service only). pp_compute_convergence: both Summit surname-only conditions replaced by
+--      pp_summit_parcel_ok (old def in pp_function_backup). Allow: Godfrey Susan, Vincent Eric (trustees), Richins
+--      Jonathan (spelling). Block: Johnson Mary (county owner Tracy Daniel trustee).
+--    Recompute 45484989304: gate PASSED; 0 Summit leads still on a parcel that fails the guard. Cleared, e.g. Martinez
+--      Alberto Mireles, Black Barbara J (x2), Hobson Kale, Chodounsky, Oberle Linda, Johnson Mary. Simich picked up its
+--      own parcel SOS-A-31 address instead.
