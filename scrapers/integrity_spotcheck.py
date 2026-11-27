@@ -98,9 +98,13 @@ for b in random.sample(rec, min(3,len(rec))) + random.sample(mv, min(2,len(mv)))
     entry = b['sold_entry'] if _sold(b) else b['entries'][0]
     e,t=_fetch(entry)
     if not t: continue
-    bchecked+=1
     k=re.search(r'KIND OF INST:\s*([A-Z][A-Z ]{0,10}?)\s+-\s+(.{0,80}?)\s+FEES',t)
-    kind=k.group(1).strip() if k else '?'; desc=k.group(2) if k else ''
+    if not k:   # Nov 27 2026: the county page sometimes comes back incomplete around 2-3 AM; read it once more, then skip
+        time.sleep(8); e,t=_fetch(entry)
+        k=re.search(r'KIND OF INST:\s*([A-Z][A-Z ]{0,10}?)\s+-\s+(.{0,80}?)\s+FEES',t or '')
+    if not k: print(f"  buyer entry {e}: kind not readable on page"); continue
+    bchecked+=1
+    kind=k.group(1).strip(); desc=k.group(2)
     role='GRANTOR' if as_seller else 'GRANTEE'
     seg=re.search(role+r'S?:?\s*(.{0,200})',t); named=bool(seg and _surname(b['buyer_display']) in seg.group(1))
     # Any warranty-deed variant counts (WD, SP WD, C WD, "WD W - WARRANTY DEED WITH WATER", ...); quit claims too for off-title.
